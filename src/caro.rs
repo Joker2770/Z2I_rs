@@ -146,7 +146,7 @@ impl CaroJudge {
         if last_move < 0 {
             return false;
         }
-        let n = board.len();
+        // let n = board.len();
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
         for d in dirs.iter() {
             if Self::find_shape(board, last_move, *d) {

@@ -305,7 +305,7 @@ impl MCTS {
     }
 
     pub async fn simulation(&self, gomoku: &Gomoku) {
-        let (mut node, mut g) = {
+        let (node, mut g) = {
             let mut node = Rc::clone(&self.root.borrow());
             let mut g = gomoku.clone();
 
@@ -328,7 +328,7 @@ impl MCTS {
         let (game_stage, color) = g.get_game_status();
         let mut value = 0.0;
 
-        if *game_stage == GameStage::running {
+        if *game_stage == GameStage::Running {
             let mut action_priors = vec![0.0; self.action_size as usize];
             let legal_hash_tab = g.get_legal_moves();
 

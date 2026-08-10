@@ -65,7 +65,7 @@ impl SelfPlay {
             let mut rng = rand::rng();
 
             let mut hasher = Sha256::new();
-            while game_status.0 == GameStage::running {
+            while game_status.0 == GameStage::Running {
                 let temp = if step < cfg::EXPLORE_STEP {
                     cfg::EXPLORE_TEMP
                 } else {

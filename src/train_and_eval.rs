@@ -78,7 +78,7 @@ pub async fn play_for_eval(
             g_ref.borrow().get_action_size(),
         );
 
-        while game_state.0 == GameStage::running {
+        while game_state.0 == GameStage::Running {
             let is_a_turn = if a_first {
                 step % 2 == 0
             } else {

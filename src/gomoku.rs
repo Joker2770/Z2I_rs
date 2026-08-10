@@ -34,7 +34,7 @@ impl CheckResult {
         };
         Self {
             rule_grp: obj,
-            chk_rst: (GameStage::running, Color::Blank),
+            chk_rst: (GameStage::Running, Color::Blank),
         }
     }
 
@@ -46,7 +46,7 @@ impl CheckResult {
         last_move: i16,
     ) -> &(GameStage, Color) {
         if last_move < 0 {
-            return &(GameStage::running, Color::Blank);
+            return &(GameStage::Running, Color::Blank);
         }
         let mut is_win = false;
         let mut flag = RuleFlag::FreeStyle;
@@ -135,15 +135,15 @@ impl CheckResult {
             let row = (idx / s) as isize;
             let col = (idx % s) as isize;
 
-            self.chk_rst = (GameStage::end, board[row as usize][col as usize]);
+            self.chk_rst = (GameStage::End, board[row as usize][col as usize]);
         } else if rule_flag.contains(RuleFlag::Renju) {
             if let Some(mut r) = self.rule_grp.renju_obj {
                 if !(r.is_legal(board, last_move)) {
-                    self.chk_rst = (GameStage::end, Color::White);
+                    self.chk_rst = (GameStage::End, Color::White);
                 }
             }
         } else {
-            self.chk_rst = (GameStage::running, Color::Blank);
+            self.chk_rst = (GameStage::Running, Color::Blank);
         }
 
         &self.chk_rst
@@ -152,8 +152,8 @@ impl CheckResult {
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GameStage {
-    running = 0,
-    end = 1,
+    Running = 0,
+    End = 1,
 }
 
 #[derive(Clone)]
@@ -181,7 +181,7 @@ impl Gomoku {
             let g = Gomoku {
                 board_size: b_s,
                 cur_color: Color::Black,
-                cur_stage: GameStage::running,
+                cur_stage: GameStage::Running,
                 last_move: -1,
                 board: vec![vec![Color::Blank; b_s as usize]; b_s as usize],
                 n_in_row: n_in_row,
@@ -271,7 +271,7 @@ impl Gomoku {
         self.sum_cur_actions = stones.len() as u16;
         self.last_move = stones.last().map_or(-1, |(move_idx, _)| *move_idx as i16);
         self.cur_color = next_color;
-        self.cur_stage = GameStage::running;
+        self.cur_stage = GameStage::Running;
         self.check_result = CheckResult::new();
         true
     }
@@ -307,24 +307,24 @@ impl Gomoku {
 
     pub fn get_game_status(&mut self) -> &(GameStage, Color) {
         if self.sum_cur_actions >= 9 {
-            let c = self.check_result.value(
+            let _s_c = self.check_result.value(
                 &self.rule_flag,
                 &self.board,
                 self.board_size,
                 self.last_move,
             );
 
-            if self.check_result.chk_rst.0 == GameStage::end {
+            if self.check_result.chk_rst.0 == GameStage::End {
                 return &self.check_result.chk_rst;
             }
 
             if self.has_blank_pos() {
-                &(GameStage::running, Color::Blank)
+                &(GameStage::Running, Color::Blank)
             } else {
-                &(GameStage::end, Color::Blank)
+                &(GameStage::End, Color::Blank)
             }
         } else {
-            &(GameStage::running, Color::Blank)
+            &(GameStage::Running, Color::Blank)
         }
     }
 
