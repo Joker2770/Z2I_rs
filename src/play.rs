@@ -66,7 +66,11 @@ impl SelfPlay {
 
             let mut hasher = Sha256::new();
             while game_status.0 == GameStage::running {
-                let temp = if step < cfg::EXPLORE_STEP { 1.0 } else { 1e-3 };
+                let temp = if step < cfg::EXPLORE_STEP {
+                    cfg::EXPLORE_TEMP
+                } else {
+                    cfg::GREEDY_TEMP
+                };
                 let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
                 println!("Step: {}", step);
                 let board = game_ref.borrow().get_board().clone();
@@ -145,7 +149,11 @@ impl SelfPlay {
                 .join("data")
                 .join("data_".to_string() + &save_id.to_string() + "_" + &hex_string);
             println!("Save path: {:?}", new_path);
-            new_path.parent().map(fs::create_dir_all).transpose().expect("Unable to create dirs");
+            new_path
+                .parent()
+                .map(fs::create_dir_all)
+                .transpose()
+                .expect("Unable to create dirs");
             let mut file = fs::File::create(new_path).expect("Unable to create file");
             _ = file.write_all(&(step as i32).to_ne_bytes());
 

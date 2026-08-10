@@ -11,6 +11,7 @@ use tokio::task;
 use crate::gomoku::{GameStage, Gomoku};
 use crate::ortopt::NeuralNetwork;
 use crate::rule::Color;
+use crate::configuration::cfg;
 
 #[derive(Debug)]
 pub struct MCTSNode {
@@ -210,7 +211,7 @@ impl MCTS {
         let children = root.children.borrow().clone();
 
         // greedy
-        if (temp - 1e-3).abs() < f64::EPSILON {
+        if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
             let mut best_action = 0;
             let mut most_visits = 0;
             for c in children.iter() {

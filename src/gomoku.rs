@@ -1,4 +1,3 @@
-
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Joker2770
 
@@ -7,7 +6,7 @@ use crate::{
     configuration::cfg,
     free_style::FreeStyleJudge,
     renju::RenjuJudge,
-    rule::{ Board, Color, RuleFlag},
+    rule::{Board, Color, RuleFlag},
     standard::StandardJudge,
 };
 

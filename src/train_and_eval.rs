@@ -15,13 +15,7 @@ mod standard;
 
 use gomoku::Gomoku;
 use mcts::MCTS;
-use std::{
-    cell::RefCell,
-    env,
-    fs,
-    io::Write,
-    rc::Rc,
-};
+use std::{cell::RefCell, env, fs, io::Write, rc::Rc};
 
 use crate::{
     configuration::cfg, gomoku::GameStage, ortopt::NeuralNetwork, play::SelfPlay, rule::Color,

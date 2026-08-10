@@ -19,4 +19,6 @@ pub mod cfg {
     pub const INTRA_THREAD_NUM: u8 = 4;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
+    pub const EXPLORE_TEMP: f64 = 1.0;
+    pub const GREEDY_TEMP: f64 = 1e-3;
 }
