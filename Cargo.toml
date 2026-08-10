@@ -1,0 +1,41 @@
+[package]
+name = "Z2I_rs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+cuda = ["ort/cuda"]
+
+[dependencies]
+bitflags = "2.13.1"
+futures = "0.3"
+hex = "0.4.3"
+ndarray = "0.17.2"
+ort = "2.0.0-rc.13" 
+rand = "0.10.2"
+rand_distr = "0.6.0"
+serde = { version = "1.0.229", features = ["derive"] }
+sha2 = "0.11.0"
+tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros"] }
+toml = "1.1.4"
+
+[[bin]]
+name = "pbrain-Z2I_rs"
+path = "src/main.rs"
+
+[[bin]]
+name = "train_and_eval"
+path = "src/train_and_eval.rs"
+
+[profile.dev]
+opt-level = 0
+debug = true
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = false
+panic = "abort"
+strip = "debuginfo"
