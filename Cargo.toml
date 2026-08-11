@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 cuda = ["ort/cuda"]
+openvino = ["ort/openvino"]
 
 [dependencies]
 bitflags = "2.13.1"

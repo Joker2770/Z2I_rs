@@ -10,7 +10,7 @@ from torch.optim import Adam
 # import torch.nn.functional as F
 
 import numpy as np
-
+from common import config
 
 def conv3x3(in_channels, out_channels, stride=1):
     # 3x3 convolution
@@ -140,12 +140,16 @@ class NeuralNetWorkWrapper():
         self.n = n
         self.input_channel_size = input_channel_size
 
-        self.is_cuda_available = torch.cuda.is_available()
+        if config['train_use_gpu']:
+            self.is_cuda_available = torch.cuda.is_available()
+        else:
+            self.is_cuda_available = False
+
         if(self.is_cuda_available):
-            print("发现并使用GPU")
+            print("Find and use GPU")
             print(torch.cuda.get_device_name(torch.cuda.current_device()))
         else:
-            print("使用CPU")
+            print("use CPU")
 
         self.neural_network = NeuralNetWork(num_layers, num_channels, n, action_size, input_channel_size)
         if self.is_cuda_available:

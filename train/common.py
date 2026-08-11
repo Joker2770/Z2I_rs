@@ -11,7 +11,7 @@ config = {
     #'c_virtual_loss': 3,                        # virtual loss coeff
 
     # neural_network
-    #'train_use_gpu' : True,                     # train neural network using cuda
+    'train_use_gpu': True,                     # train neural network using cuda
     'lr': 0.001,                                # learning rate
     'l2': 0.0001,                               # L2
     'num_channels': 256,                        # convolution neural network channel size

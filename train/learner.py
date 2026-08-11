@@ -3,7 +3,7 @@ from os import path, mkdir
 import os
 import torch
 import numpy as np
-import common as config
+from common import config
 # import pickle
 # import concurrent.futures
 import random, struct
@@ -37,7 +37,7 @@ class Learner():
 
         self.examples_buffer = deque([], maxlen=config['examples_buffer_max_len'])
 
-        self.use_GPU = torch.cuda.is_available()
+        self.use_GPU = config['train_use_gpu']
 
         # neural network
         self.batch_size = config['batch_size']
@@ -84,7 +84,8 @@ class Learner():
         model_path = path.join(model_dir, str(model_id+1))
         self.nnet.save_model(model_path)
         if self.use_GPU:
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     def get_symmetries(self, board, pi, last_action):
         # mirror, rotational
@@ -164,7 +165,7 @@ class Learner():
 
 if __name__ == '__main__':
     model_dir = path.join("..","build","weights")
-    le = Learner(config.config)
+    le = Learner(config)
     if len(sys.argv) <= 1 or sys.argv[1] == "prepare":
         print("save 0-th model !!")
         le.nnet.save_model(path.join(model_dir,'0'))
