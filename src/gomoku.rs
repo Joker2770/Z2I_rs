@@ -306,25 +306,39 @@ impl Gomoku {
     }
 
     pub fn get_game_status(&mut self) -> &(GameStage, Color) {
-        if self.sum_cur_actions >= 9 {
-            let _s_c = self.check_result.value(
-                &self.rule_flag,
-                &self.board,
-                self.board_size,
-                self.last_move,
-            );
+        if self.n_in_row == 5 {
+            if self.sum_cur_actions >= 9 {
+                let _s_c = self.check_result.value(
+                    &self.rule_flag,
+                    &self.board,
+                    self.board_size,
+                    self.last_move,
+                );
 
-            if self.check_result.chk_rst.0 == GameStage::End {
-                return &self.check_result.chk_rst;
-            }
+                if self.check_result.chk_rst.0 == GameStage::End {
+                    return &self.check_result.chk_rst;
+                }
 
-            if self.has_blank_pos() {
-                &(GameStage::Running, Color::Blank)
+                if self.has_blank_pos() {
+                    &(GameStage::Running, Color::Blank)
+                } else {
+                    &(GameStage::End, Color::Blank)
+                }
             } else {
-                &(GameStage::End, Color::Blank)
+                &(GameStage::Running, Color::Blank)
             }
+        } else if let Some(winner) = self.find_n_in_row_winner() {
+            self.cur_stage = GameStage::End;
+            self.check_result.chk_rst = (GameStage::End, winner);
+            &self.check_result.chk_rst
+        } else if self.has_blank_pos() {
+            self.cur_stage = GameStage::Running;
+            self.check_result.chk_rst = (GameStage::Running, Color::Blank);
+            &self.check_result.chk_rst
         } else {
-            &(GameStage::Running, Color::Blank)
+            self.cur_stage = GameStage::End;
+            self.check_result.chk_rst = (GameStage::End, Color::Blank);
+            &self.check_result.chk_rst
         }
     }
 
@@ -373,6 +387,44 @@ impl Gomoku {
     pub fn render(&self) {
         print!("{}", self.render_to_string());
     }
+
+    fn find_n_in_row_winner(&self) -> Option<Color> {
+        let board_size = self.board_size as usize;
+        let n_in_row = self.n_in_row as usize;
+
+        for row in 0..board_size {
+            for col in 0..board_size {
+                if self.board[row][col] == Color::Blank {
+                    continue;
+                }
+
+                let directions = [(0isize, 1isize), (1, 0), (1, 1), (1, -1)];
+                for (row_step, col_step) in directions {
+                    let end_row = row as isize + (n_in_row - 1) as isize * row_step;
+                    let end_col = col as isize + (n_in_row - 1) as isize * col_step;
+                    if end_row < 0
+                        || end_row >= board_size as isize
+                        || end_col < 0
+                        || end_col >= board_size as isize
+                    {
+                        continue;
+                    }
+
+                    let mut sum = 0;
+                    for offset in 0..n_in_row {
+                        let check_row = (row as isize + offset as isize * row_step) as usize;
+                        let check_col = (col as isize + offset as isize * col_step) as usize;
+                        sum += self.board[check_row][check_col] as i32;
+                    }
+                    if sum.abs() == self.n_in_row as i32 {
+                        return Some(self.board[row][col]);
+                    }
+                }
+            }
+        }
+
+        None
+    }
 }
 
 #[cfg(test)]
@@ -413,5 +465,34 @@ mod tests {
         expected.push_str(". . . . . . . . . . . . . . X\n");
 
         assert_eq!(gomoku.render_to_string(), expected);
+    }
+
+    #[test]
+    fn n_in_row_detects_all_directions() {
+        let cases = [
+            vec![(0, Color::Black), (1, Color::Black), (2, Color::Black)],
+            vec![(0, Color::Black), (5, Color::Black), (10, Color::Black)],
+            vec![(0, Color::Black), (6, Color::Black), (12, Color::Black)],
+            vec![(2, Color::Black), (6, Color::Black), (10, Color::Black)],
+        ];
+
+        for stones in cases {
+            let mut gomoku = Gomoku::new(5, 3).unwrap();
+            assert!(gomoku.load_position(&stones, Color::White));
+            assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+        }
+    }
+
+    #[test]
+    fn n_in_row_without_winner_is_running() {
+        let mut gomoku = Gomoku::new(5, 3).unwrap();
+        assert!(gomoku.load_position(
+            &[(0, Color::Black), (1, Color::Black), (7, Color::Black)],
+            Color::White,
+        ));
+        assert_eq!(
+            gomoku.get_game_status(),
+            &(GameStage::Running, Color::Blank)
+        );
     }
 }
