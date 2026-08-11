@@ -161,7 +161,6 @@ pub struct Gomoku {
     board_size: u8,
     board: Board,
     cur_color: Color,
-    cur_stage: GameStage,
     last_move: i16,
     n_in_row: u8,
     rule_flag: RuleFlag,
@@ -181,7 +180,6 @@ impl Gomoku {
             let g = Gomoku {
                 board_size: b_s,
                 cur_color: Color::Black,
-                cur_stage: GameStage::Running,
                 last_move: -1,
                 board: vec![vec![Color::Blank; b_s as usize]; b_s as usize],
                 n_in_row: n_in_row,
@@ -218,10 +216,6 @@ impl Gomoku {
 
     pub fn get_legal_moves(&self) -> &Vec<u8> {
         &self.legal_moves_hash_tab
-    }
-
-    pub fn get_game_stage(&self) -> &GameStage {
-        &self.cur_stage
     }
 
     pub fn has_blank_pos(&self) -> bool {
@@ -271,7 +265,6 @@ impl Gomoku {
         self.sum_cur_actions = stones.len() as u16;
         self.last_move = stones.last().map_or(-1, |(move_idx, _)| *move_idx as i16);
         self.cur_color = next_color;
-        self.cur_stage = GameStage::Running;
         self.check_result = CheckResult::new();
         true
     }
@@ -320,26 +313,22 @@ impl Gomoku {
                 }
 
                 if self.has_blank_pos() {
-                    &(GameStage::Running, Color::Blank)
+                    self.check_result.chk_rst = (GameStage::Running, Color::Blank);
                 } else {
-                    &(GameStage::End, Color::Blank)
+                    self.check_result.chk_rst = (GameStage::End, Color::Blank);
                 }
             } else {
-                &(GameStage::Running, Color::Blank)
+                self.check_result.chk_rst = (GameStage::Running, Color::Blank);
             }
         } else if let Some(winner) = self.find_n_in_row_winner() {
-            self.cur_stage = GameStage::End;
             self.check_result.chk_rst = (GameStage::End, winner);
-            &self.check_result.chk_rst
         } else if self.has_blank_pos() {
-            self.cur_stage = GameStage::Running;
             self.check_result.chk_rst = (GameStage::Running, Color::Blank);
-            &self.check_result.chk_rst
         } else {
-            self.cur_stage = GameStage::End;
             self.check_result.chk_rst = (GameStage::End, Color::Blank);
-            &self.check_result.chk_rst
         }
+
+        &self.check_result.chk_rst
     }
 
     fn render_to_string(&self) -> String {
