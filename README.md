@@ -144,13 +144,33 @@ cargo run --release --bin train_and_eval -- eval_with_random 10
 - `eval_with_winner <games>`：评估当前权重与最佳权重。
 - `eval_with_random <games>`：评估当前权重与无神经网络的随机 MCTS 对手。
 
-Python 训练脚本位于 `python/`，依赖可通过以下命令安装：
+Python 训练脚本位于 `train/`，依赖可通过以下命令安装：
 
 ```bash
-python -m pip install -r python/requirements.txt
+python3 -m pip install -r train/requirements.txt
 ```
 
 训练流程需要 Python 侧生成初始 ONNX 权重，然后 Rust 端才能进行带模型的自对弈和评估。
+
+### ORT Training
+
+Rust 训练入口需要 ONNX Runtime Training artifacts，而不是普通推理模型。artifact 目录必须包含：
+
+```text
+training_model.onnx
+eval_model.onnx
+optimizer_model.onnx
+checkpoint
+```
+
+生成 artifacts 后，可以使用 Rust 训练入口读取 `data/` 中的 Rust 自对弈数据：
+
+```bash
+cargo run --features training --bin ort_train -- \
+	artifacts data weights/1.onnx artifacts/checkpoint.updated 128 1
+```
+
+参数顺序为：`artifact_dir data_dir output_model checkpoint batch_size epochs`。默认训练输入名为 `board`、`target_p`、`target_v`；如果训练图使用其他名称，可继续传入三个名称参数。普通 `weights/*.onnx` 只支持推理，不能直接作为 ORT Training artifacts。
 
 ## 推理与吞吐量
 

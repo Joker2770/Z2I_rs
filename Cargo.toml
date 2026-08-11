@@ -5,6 +5,7 @@ edition = "2024"
 
 [features]
 default = []
+training = ["ort/training"]
 cuda = ["ort/cuda"]
 openvino = ["ort/openvino"]
 
@@ -28,6 +29,11 @@ path = "src/main.rs"
 [[bin]]
 name = "train_and_eval"
 path = "src/train_and_eval.rs"
+
+[[bin]]
+name = "ort_train"
+path = "src/ort_train.rs"
+required-features = ["training"]
 
 [profile.dev]
 opt-level = 0
