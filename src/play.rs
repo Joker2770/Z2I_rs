@@ -114,7 +114,7 @@ impl SelfPlay {
                 }
 
                 let rst = mcts.get_best_action_from_probs(&action_probs);
-                mcts.update_root_with_action(rst);
+                mcts.update_root_with_action(&game_ref.borrow(),rst);
                 if !game_ref.borrow_mut().execute_move(rst) {
                     break;
                 }

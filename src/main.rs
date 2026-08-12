@@ -201,7 +201,7 @@ impl Brain {
         if !game.execute_move(action) {
             return None;
         }
-        self.mcts.as_mut()?.update_root_with_action(action);
+        self.mcts.as_mut()?.update_root_with_action(&game, action);
         Some(action)
     }
 

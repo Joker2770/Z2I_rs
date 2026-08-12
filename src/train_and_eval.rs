@@ -45,8 +45,8 @@ pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
 }
 
 pub async fn play_for_eval(
-    a: Option<Rc<RefCell<NeuralNetwork>>>,
-    b: Option<Rc<RefCell<NeuralNetwork>>>,
+    nn_a: Option<Rc<RefCell<NeuralNetwork>>>,
+    nn_b: Option<Rc<RefCell<NeuralNetwork>>>,
     a_first: bool,
     do_render: bool,
     num_mcts_sim_a: u16,
@@ -64,14 +64,14 @@ pub async fn play_for_eval(
             *game.get_game_status()
         };
         let mut ma = MCTS::new(
-            a,
+            nn_a,
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
             num_mcts_sim_a as usize,
             g_ref.borrow().get_action_size(),
         );
         let mut mb = MCTS::new(
-            b,
+            nn_b,
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
             num_mcts_sim_b as usize,
@@ -89,12 +89,18 @@ pub async fn play_for_eval(
             } else {
                 mb.get_best_action(&g_ref.borrow()).await
             };
-            ma.update_root_with_action(best_action);
-            mb.update_root_with_action(best_action);
-            g_ref.borrow_mut().execute_move(best_action);
+            let is_update_succeed_a = ma.update_root_with_action(&g_ref.borrow(), best_action);
+            let is_update_succeed_b = mb.update_root_with_action(&g_ref.borrow(), best_action);
+            if is_update_succeed_a && is_update_succeed_b {
+                g_ref.borrow_mut().execute_move(best_action);
+            } else {
+                eprintln!("May be wrong with MCTS!!!");
+            }
 
             if do_render {
+                println!("step: {}", step);
                 g_ref.borrow().render();
+                println!("");
             }
             game_state = {
                 let mut game = g_ref.borrow_mut();
@@ -130,11 +136,16 @@ async fn run_eval_games(
 ) -> (u16, u16, u16) {
     let mut result = (0, 0, 0);
 
+    let a = model_a.clone();
+    let b = model_b.clone();
     for game_index in 0..game_num {
         println!("Eval game {} start...", game_index + 1);
+        let ma = a.clone();
+        let mb = b.clone();
+
         let (a_win, b_win, draw) = play_for_eval(
-            model_a.clone(),
-            model_b.clone(),
+            ma,
+            mb,
             game_index % 2 == 0,
             cfg::RENDER_AT_EVAL,
             num_mcts_sim_a,
@@ -177,7 +188,7 @@ pub async fn eval(
                 .join("weights")
                 .join(weight_id.to_string() + ".onnx");
             match NeuralNetwork::new(&model_path, cfg::MAX_BATCH_SIZE as usize) {
-                Ok(model) => Some(Rc::new(RefCell::new(model))),
+                Ok(model) => Some(model),
                 Err(error) => {
                     eprintln!("Load model {} error: {}", model_path.display(), error);
                     None
@@ -185,9 +196,8 @@ pub async fn eval(
             }
         }
     };
-
-    let model_a = load_model(weight_a_id);
-    let model_b = load_model(weight_b_id);
+    let model_a = load_model(weight_a_id).map(|m| Rc::new(RefCell::new(m)));
+    let model_b = load_model(weight_b_id).map(|m| Rc::new(RefCell::new(m)));
     if weight_a_id >= 0 && model_a.is_none() || weight_b_id >= 0 && model_b.is_none() {
         return (0, 0, 0);
     }

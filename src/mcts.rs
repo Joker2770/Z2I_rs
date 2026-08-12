@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Joker2770
 
-use futures::future::join_all;
 use std::cell::RefCell;
 use std::ops::Div;
 use std::rc::{Rc, Weak};
@@ -106,7 +105,7 @@ impl MCTSNode {
             let value = c.get_puct_value(c_puct, c_virtual_loss, sum_visits_from_parent);
             if value > best_value {
                 best_value = value;
-                best_child = Some(c.clone());
+                best_child = Some(Rc::clone(&c));
                 let old_vl = self.virtual_loss.borrow().load(Ordering::SeqCst);
                 let new_vl = old_vl.saturating_add(1);
                 self.virtual_loss
@@ -186,35 +185,48 @@ impl MCTS {
         }
     }
 
-    pub fn update_root_with_action(&mut self, action: u16) -> bool {
-        if action >= self.action_size {
-            return false;
-        }
+    pub fn update_root_with_action(&mut self, gomoku: &Gomoku, select_action: u16) -> bool {
         let new_root = {
-            let root = self.root.borrow();
-            root.children
-                .borrow()
-                .iter()
-                .find(|c| c.action == action)
-                .cloned()
+            let root = Rc::clone(&self.root.borrow());
+            let mut select_child = None;
+            for c in root.children.borrow().iter() {
+                if c.action == select_action {
+                    select_child = Some(Rc::clone(c));
+                }
+            }
+            select_child
         };
+
+        let mut is_succeed = false;
 
         if let Some(node) = new_root {
             *node.parent.borrow_mut() = Weak::new();
-            *self.root.borrow_mut() = node;
-            true
+            *self.root.borrow_mut() = Rc::clone(&node);
+            is_succeed = true
         } else {
-            false
+            let legal_moves_hash_tab = gomoku.get_legal_moves();
+            for (action, legal) in legal_moves_hash_tab.iter().enumerate() {
+                if action == select_action as usize && *legal == 1 {
+                    let mut new_child = MCTSNode::new();
+                    new_child.action = action as u16;
+                    *new_child.parent.borrow_mut() = Weak::new();
+
+                    *self.root.borrow_mut() = Rc::new(new_child);
+                    return true;
+                }
+            }
         }
+        is_succeed
     }
 
     pub async fn get_action_probs(&self, gomoku: &Gomoku, temp: f64) -> Vec<f64> {
-        let simulations = (0..self.simulation_num).map(|_| self.simulation(gomoku));
-        join_all(simulations).await;
+        for _ in 0..self.simulation_num {
+            self.simulation(gomoku).await;
+        }
         let priors_size = gomoku.get_action_size() as usize;
         let mut action_probs = vec![0.0; priors_size];
-        let root = self.root.borrow().clone();
-        let children = root.children.borrow().clone();
+        let root = self.root.borrow();
+        let children = root.children.borrow();
 
         // greedy
         if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
@@ -245,6 +257,7 @@ impl MCTS {
             for c in children.iter() {
                 let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
                 if c_v > 0 {
+                    println!("...c_v: {}", c_v);
                     let idx = c.action as usize;
                     action_probs[idx] = (c_v as f64).powf((1.0).div(temp));
                     sum = sum + action_probs[idx];
@@ -281,15 +294,26 @@ impl MCTS {
     }
 
     pub async fn get_best_action(&self, gomoku: &Gomoku) -> u16 {
-        let simulations = (0..self.simulation_num).map(|_| self.simulation(gomoku));
-        join_all(simulations).await;
-        let children = self.root.borrow().children.borrow().clone();
-        // if first step???
+        for _ in 0..self.simulation_num {
+            self.simulation(gomoku).await;
+        }
+        let root = self.root.borrow();
+        let children = root.children.borrow();
+
+        if children.is_empty() {
+            for (action, legal) in gomoku.get_legal_moves().iter().enumerate() {
+                if *legal == 1 {
+                    return action as u16;
+                }
+            }
+            return u16::MAX;
+        }
+
         let mut best_action = u16::MAX;
-        let mut most_visits = 0;
+        let mut most_visits = 0usize;
         for c in children.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
-            if c_v > most_visits {
+            if c_v >= most_visits {
                 most_visits = c_v;
                 best_action = c.action;
             }
@@ -332,10 +356,13 @@ impl MCTS {
             (node, g)
         };
 
-        let (game_stage, color) = g.get_game_status();
+        let (game_stage, color) = {
+            let status = g.get_game_status();
+            *status
+        };
         let mut value = 0.0;
 
-        if *game_stage == GameStage::Running {
+        if game_stage == GameStage::Running {
             let mut action_priors = vec![0.0; self.action_size as usize];
             let legal_hash_tab = g.get_legal_moves();
 
@@ -375,17 +402,17 @@ impl MCTS {
                 }
             }
 
-            for (i, v) in g.get_legal_moves().iter().enumerate() {
+            for (i, v) in legal_hash_tab.iter().enumerate() {
                 if *v == 1 {
                     node.expand(i as u16, action_priors[i]);
                 }
             }
-        } else {
-            let winner = color;
-            value = if *winner == Color::Blank { 0.0 } else { 1.0 }
-        }
 
-        node.backpropagate(value);
+            node.backpropagate(value);
+        } else {
+            value = if color == Color::Blank { 0.0 } else { 1.0 };
+            node.backpropagate(value);
+        }
     }
 }
 
@@ -398,7 +425,7 @@ mod tests {
     #[tokio::test]
     async fn get_best_action_on_first_move_returns_a_legal_action() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, 20, game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, 1, game.get_action_size());
 
         let action = mcts.get_best_action(&game).await;
 
@@ -418,7 +445,7 @@ mod tests {
 
         mcts.simulation(&game).await;
 
-        let root = mcts.root.borrow().clone();
+        let root = mcts.root.borrow();
         assert_eq!(root.visits.borrow().load(Ordering::SeqCst), 1);
         assert_eq!(
             root.children.borrow().len(),
@@ -436,8 +463,9 @@ mod tests {
         }
 
         assert_eq!(root.visits.borrow().load(Ordering::SeqCst), 4);
-        let selected_child = root.children.borrow()[0].clone();
-        assert_eq!(selected_child.visits.borrow().load(Ordering::SeqCst), 3);
+        let child_0 = root.children.borrow()[0].clone();
+        let selected_child_visits = child_0.visits.borrow().load(Ordering::SeqCst);
+        assert_eq!(selected_child_visits, 3);
     }
 
     #[tokio::test]
@@ -496,7 +524,6 @@ mod tests {
 
         child.backpropagate(1.0);
 
-        // child should have 1 visit and total_value 1.0
         assert_eq!(
             child
                 .visits
@@ -506,7 +533,6 @@ mod tests {
         );
         assert!((*child.total_value.borrow() - 1.0).abs() < 1e-12);
 
-        // parent should have 1 visit (from backprop) and total_value -1.0
         assert_eq!(
             parent
                 .visits
