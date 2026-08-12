@@ -144,22 +144,62 @@ impl RenjuJudge {
         if v.len() < 5 {
             return 0;
         }
-        let mut cnt = 0i32;
+        let mut i_count = 0i32;
+        let mut i_flag = 0i32;
+        let mut b_1_before_3 = false;
         for j in 0..=v.len() - 5 {
-            for shape in A4_SHAPES.iter() {
+            for i in 0..5 {
                 let mut ok = true;
                 for k in 0..5 {
-                    if shape[k] != v[j + k] {
+                    if A4_SHAPES[i][k] != v[j + k] {
                         ok = false;
                         break;
                     }
                 }
                 if ok {
-                    cnt += 1;
+                    if i == 1 || i == 3 {
+                        if i == 1 {
+                            i_flag |= 0x01;
+                        } else if i == 3 {
+                            if (i_flag & 0x01) == 0x01 {
+                                b_1_before_3 = true;
+                            }
+                            i_flag |= 0x02;
+                        }
+                        break;
+                    } else if i == 2 {
+                        if (i_flag & 0x04) != 0x04 {
+                            i_flag |= 0x04;
+                        } else if (i_flag & 0x08) != 0x08 {
+                            i_flag |= 0x08;
+                        }
+                        break;
+                    } else {
+                        i_count = 1;
+                    }
                 }
             }
         }
-        cnt
+
+        if (i_flag & 0x0F) == 0x0F {
+            i_count = 2;
+        } else if (i_flag & 0x07) == 0x07 {
+            if b_1_before_3 {
+                i_count = 2;
+            } else {
+                i_count = 1;
+            }
+        } else if (i_flag & 0x03) == 0x03 {
+            i_count = 2;
+        } else if (i_flag & (0x04 | 0x08)) == (0x04 | 0x08) {
+            i_count = 2;
+        } else if ((i_flag & 0x03) == 0x01) || ((i_flag & 0x03) == 0x02) {
+            i_count = 1;
+        } else if ((i_flag & 0x04) == 0x04) || ((i_flag & 0x08) == 0x08) {
+            i_count = 1;
+        }
+
+        i_count
     }
 
     fn count_a3(board: &Board, last_move: i16, p_drt: (isize, isize)) -> i32 {
@@ -167,22 +207,21 @@ impl RenjuJudge {
         if v.len() < 6 {
             return 0;
         }
-        let mut cnt = 0i32;
         for j in 0..=v.len() - 6 {
-            for shape in A3_SHAPES.iter() {
+            for i in 0..4 {
                 let mut ok = true;
                 for k in 0..6 {
-                    if shape[k] != v[j + k] {
+                    if A3_SHAPES[i][k] != v[j + k] {
                         ok = false;
                         break;
                     }
                 }
                 if ok {
-                    cnt += 1;
+                    return 1;
                 }
             }
         }
-        cnt
+        0
     }
 
     fn is_double_four(&self, board: &Board, last_move: i16) -> bool {
@@ -196,46 +235,175 @@ impl RenjuJudge {
 
     fn is_double_three(&self, board: &Board, last_move: i16) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
-        let mut sum3 = 0i32;
-        let mut sum4 = 0i32;
-        for d in dirs.iter() {
-            sum3 += Self::count_a3(board, last_move, *d);
-            sum4 += Self::count_a4(board, last_move, *d);
+        let mut i_up_4 = 0i32;
+        let mut i_left_4 = 0i32;
+        let mut i_leftup_4 = 0i32;
+        let mut i_leftdown_4 = 0i32;
+        let mut i_up_3 = 0i32;
+        let mut i_left_3 = 0i32;
+        let mut i_leftup_3 = 0i32;
+        let mut i_leftdown_3 = 0i32;
+
+        i_up_4 = Self::count_a4(board, last_move, dirs[0]);
+        i_left_4 = Self::count_a4(board, last_move, dirs[1]);
+        i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
+        i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
+        i_up_3 = Self::count_a3(board, last_move, dirs[0]);
+        i_left_3 = Self::count_a3(board, last_move, dirs[1]);
+        i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
+        i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
+
+        let sum4 = i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4;
+        let sum3 = i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3;
+
+        if (sum4 < 2) && (sum3 >= 2) {
+            if sum4 == 0 {
+                return sum3 >= 2;
+            } else {
+                if i_up_4 == 1 {
+                    if i_left_3 + i_leftup_3 + i_leftdown_3 >= 2 {
+                        return true;
+                    } else if i_left_3 + i_leftup_3 + i_leftdown_3 == 1 {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                } else if i_left_4 == 1 {
+                    if i_up_3 + i_leftup_3 + i_leftdown_3 >= 2 {
+                        return true;
+                    } else if i_up_3 + i_leftup_3 + i_leftdown_3 == 1 {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                } else if i_leftup_4 == 1 {
+                    if i_up_3 + i_left_3 + i_leftdown_3 >= 2 {
+                        return true;
+                    } else if i_up_3 + i_left_3 + i_leftdown_3 == 1 {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                } else if i_leftdown_4 == 1 {
+                    if i_up_3 + i_leftup_3 + i_left_3 >= 2 {
+                        return true;
+                    } else if i_up_3 + i_leftup_3 + i_left_3 == 1 {
+                        return false;
+                    } else {
+                        return false;
+                    }
+                }
+            }
         }
-        (sum4 < 2) && (sum3 >= 2)
+        false
     }
 
     fn is_four_three(&self, board: &Board, last_move: i16) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
-        let mut sum4 = 0i32;
-        let mut sum3 = 0i32;
-        for d in dirs.iter() {
-            sum4 += Self::count_a4(board, last_move, *d);
-            sum3 += Self::count_a3(board, last_move, *d);
+        let i_up_4 = Self::count_a4(board, last_move, dirs[0]);
+        let i_left_4 = Self::count_a4(board, last_move, dirs[1]);
+        let i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
+        let i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
+        let i_up_3 = Self::count_a3(board, last_move, dirs[0]);
+        let i_left_3 = Self::count_a3(board, last_move, dirs[1]);
+        let i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
+        let i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
+
+        if ((i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4) == 1)
+            && (i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3 >= 1)
+        {
+            if i_up_4 == 1 {
+                if i_left_3 + i_leftup_3 + i_leftdown_3 == 0 {
+                    return false;
+                } else if i_left_3 + i_leftup_3 + i_leftdown_3 > 1 {
+                    return false;
+                } else if i_left_3 + i_leftup_3 + i_leftdown_3 == 1 {
+                    return true;
+                }
+            } else if i_left_4 == 1 {
+                if i_up_3 + i_leftup_3 + i_leftdown_3 == 0 {
+                    return false;
+                } else if i_up_3 + i_leftup_3 + i_leftdown_3 > 1 {
+                    return false;
+                } else if i_up_3 + i_leftup_3 + i_leftdown_3 == 1 {
+                    return true;
+                }
+            } else if i_leftup_4 == 1 {
+                if i_up_3 + i_left_3 + i_leftdown_3 == 0 {
+                    return false;
+                } else if i_up_3 + i_left_3 + i_leftdown_3 > 1 {
+                    return false;
+                } else if i_up_3 + i_left_3 + i_leftdown_3 == 1 {
+                    return true;
+                }
+            } else if i_leftdown_4 == 1 {
+                if i_left_3 + i_leftup_3 + i_up_3 == 0 {
+                    return false;
+                } else if i_left_3 + i_leftup_3 + i_up_3 > 1 {
+                    return false;
+                } else if i_left_3 + i_leftup_3 + i_up_3 == 1 {
+                    return true;
+                }
+            }
         }
-        (sum4 == 1) && (sum3 >= 1)
+
+        false
     }
 
     fn is_four(&self, board: &Board, last_move: i16) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
-        let mut sum4 = 0i32;
-        let mut sum3 = 0i32;
-        for d in dirs.iter() {
-            sum4 += Self::count_a4(board, last_move, *d);
-            sum3 += Self::count_a3(board, last_move, *d);
+        let i_up_4 = Self::count_a4(board, last_move, dirs[0]);
+        let i_left_4 = Self::count_a4(board, last_move, dirs[1]);
+        let i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
+        let i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
+        let i_up_3 = Self::count_a3(board, last_move, dirs[0]);
+        let i_left_3 = Self::count_a3(board, last_move, dirs[1]);
+        let i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
+        let i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
+
+        if ((i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4) == 1)
+            && (i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3 < 2)
+        {
+            if i_up_4 == 1 {
+                if i_left_3 + i_leftup_3 + i_leftdown_3 == 0 {
+                    return true;
+                }
+            } else if i_left_4 == 1 {
+                if i_up_3 + i_leftup_3 + i_leftdown_3 == 0 {
+                    return true;
+                }
+            } else if i_leftup_4 == 1 {
+                if i_up_3 + i_left_3 + i_leftdown_3 == 0 {
+                    return true;
+                }
+            } else if i_leftdown_4 == 1 {
+                if i_up_3 + i_left_3 + i_leftup_3 == 0 {
+                    return true;
+                }
+            }
         }
-        (sum4 == 1) && (sum3 < 2)
+
+        false
     }
 
     fn is_three(&self, board: &Board, last_move: i16) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
-        let mut sum4 = 0i32;
-        let mut sum3 = 0i32;
-        for d in dirs.iter() {
-            sum4 += Self::count_a4(board, last_move, *d);
-            sum3 += Self::count_a3(board, last_move, *d);
+        let i_up_4 = Self::count_a4(board, last_move, dirs[0]);
+        let i_left_4 = Self::count_a4(board, last_move, dirs[1]);
+        let i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
+        let i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
+        let i_up_3 = Self::count_a3(board, last_move, dirs[0]);
+        let i_left_3 = Self::count_a3(board, last_move, dirs[1]);
+        let i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
+        let i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
+
+        if (i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4 == 0)
+            && (i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3 == 1)
+        {
+            return true;
         }
-        (sum4 == 0) && (sum3 == 1)
+
+        false
     }
 
     fn is_over_line(board: &Board, last_move: i16) -> bool {
@@ -347,25 +515,18 @@ impl RenjuJudge {
             if Self::is_over_line(board, last_move) {
                 self.m_renju_state = Pattern::Overline;
                 return false;
-            }
-            if self.is_double_four(board, last_move) {
+            } else if self.is_double_four(board, last_move) {
                 self.m_renju_state = Pattern::DoubleFour;
                 return false;
-            }
-            if self.is_double_three(board, last_move) {
-                self.m_renju_state = Pattern::DoubleThree;
-                return false;
-            }
-            // four-three is ambiguous in some rules; we will treat plain four-three as legal here but record state
-            if self.is_four_three(board, last_move) {
-                self.m_renju_state = Pattern::StraightFour;
+            } else if self.is_four_three(board, last_move) {
                 return true;
-            }
-            if self.is_four(board, last_move) {
+            } else if self.is_four(board, last_move) {
                 self.m_renju_state = Pattern::Four;
                 return true;
-            }
-            if self.is_three(board, last_move) {
+            } else if self.is_double_three(board, last_move) {
+                self.m_renju_state = Pattern::DoubleThree;
+                return false;
+            } else if self.is_three(board, last_move) {
                 self.m_renju_state = Pattern::Three;
                 return true;
             }
@@ -427,5 +588,53 @@ mod tests {
         let last_move = (r * n + 7) as i16;
         let judge = RenjuJudge::new();
         assert!(!judge.is_double_three(&board, last_move));
+    }
+
+    #[test]
+    fn detect_overline_illegal_for_black() {
+        let n = 15;
+        let mut board = vec![vec![Color::Blank; n]; n];
+        let r = 7usize;
+        // place 6 blacks in a row horizontally
+        for c in 3..=8 {
+            board[r][c] = Color::Black;
+        }
+        let last_move = (r * n + 5) as i16; // one of the middle stones
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_legal(&board, last_move));
+        assert_eq!(judge.get_renju_state(), Pattern::Overline);
+    }
+
+    #[test]
+    fn detect_five_in_a_row_win_for_white() {
+        let n = 15;
+        let mut board = vec![vec![Color::Blank; n]; n];
+        let r = 7usize;
+        // vertical five whites
+        for rr in 3..=7 {
+            board[rr][r] = Color::White;
+        }
+        let last_move = (7 * n + r) as i16;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, last_move));
+        assert_eq!(judge.get_renju_state(), Pattern::FiveInARow);
+    }
+
+    #[test]
+    fn detect_double_four_case() {
+        let n = 15;
+        let mut board = vec![vec![Color::Blank; n]; n];
+        let r = 7usize;
+        // create two separate 4 patterns crossing at (7,7)
+        board[r][3] = Color::Black;
+        board[r][4] = Color::Black;
+        board[r][5] = Color::Black;
+        board[4][7] = Color::Black;
+        board[5][7] = Color::Black;
+        board[6][7] = Color::Black;
+        board[r][7] = Color::Black;
+        let last_move = (r * n + 7) as i16;
+        let judge = RenjuJudge::new();
+        assert!(judge.is_double_four(&board, last_move));
     }
 }
