@@ -8,10 +8,10 @@ use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use tokio::task;
 
+use crate::configuration::cfg;
 use crate::gomoku::{GameStage, Gomoku};
 use crate::ortopt::NeuralNetwork;
 use crate::rule::Color;
-use crate::configuration::cfg;
 
 #[derive(Debug)]
 pub struct MCTSNode {
@@ -186,7 +186,10 @@ impl MCTS {
         }
     }
 
-    pub fn update_root_with_action(&mut self, action: u16) {
+    pub fn update_root_with_action(&mut self, action: u16) -> bool {
+        if action >= self.action_size {
+            return false;
+        }
         let new_root = {
             let root = self.root.borrow();
             root.children
@@ -199,6 +202,9 @@ impl MCTS {
         if let Some(node) = new_root {
             *node.parent.borrow_mut() = Weak::new();
             *self.root.borrow_mut() = node;
+            true
+        } else {
+            false
         }
     }
 
@@ -212,7 +218,7 @@ impl MCTS {
 
         // greedy
         if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
-            let mut best_action = 0;
+            let mut best_action = u16::MAX;
             let mut most_visits = 0;
             for c in children.iter() {
                 let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
@@ -278,7 +284,8 @@ impl MCTS {
         let simulations = (0..self.simulation_num).map(|_| self.simulation(gomoku));
         join_all(simulations).await;
         let children = self.root.borrow().children.borrow().clone();
-        let mut best_action = 0;
+        // if first step???
+        let mut best_action = self.root.borrow().action;
         let mut most_visits = 0;
         for c in children.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
