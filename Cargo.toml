@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = []
 training = ["ort/training"]
-cuda = ["ort/cuda"]
+cuda = ["ort/cuda", "ort/load-dynamic"]
 openvino = ["ort/openvino"]
 
 [dependencies]
@@ -14,7 +14,7 @@ bitflags = "2.13.1"
 futures = "0.3"
 hex = "0.4.3"
 ndarray = "0.17.2"
-ort = "2.0.0-rc.13" 
+ort = "2.0.0-rc.13"
 rand = "0.10.2"
 rand_distr = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }

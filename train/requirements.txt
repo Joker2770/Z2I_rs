@@ -1,6 +1,7 @@
 numpy
 torch==2.13.0
 onnx
+onnxscript
 onnxruntime
 # Required only when generating ORT Training artifacts.
 onnxruntime-training
