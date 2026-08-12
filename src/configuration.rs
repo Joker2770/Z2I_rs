@@ -18,7 +18,12 @@ pub mod cfg {
     pub const DIRI: f64 = 0.2;
     pub const INTRA_THREAD_NUM: u8 = 4;
     pub const NUM_2_SELF_PLAY: u16 = 10;
-    pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
+    // 0 - free-style
+    // 1 - standard
+    // 4 - renju
+    // 8 - caro
+    // 1|8 - standard-caro
+    pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0100;
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
     pub const RENDER_AT_EVAL: bool = true;
