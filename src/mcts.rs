@@ -62,7 +62,7 @@ impl MCTSNode {
 
     pub fn get_u(&self, c_puct: f64) -> f64 {
         let vf = self.visits.borrow().load(Ordering::SeqCst) as f64;
-        let u = c_puct * self.prior_probs * vf.sqrt() / 1.0 + vf;
+        let u = c_puct * self.prior_probs * vf.sqrt() / (1.0 + vf);
         u
     }
 
@@ -87,7 +87,8 @@ impl MCTSNode {
         };
         let get_u = |v: usize, c_puct: f64| {
             let vf = v as f64;
-            let u = c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / 1.0 + vf;
+            let u =
+                c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / (1.0 + vf);
             u
         };
 

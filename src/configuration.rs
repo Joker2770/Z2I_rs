@@ -15,7 +15,7 @@ pub mod cfg {
     pub const OUTPUT_0_NAME: &str = "V";
     pub const OUTPUT_1_NAME: &str = "P";
     pub const EXPLORE_STEP: u16 = BOARD_SIZE as u16 * BOARD_SIZE as u16;
-    pub const DIRI: f64 = 0.2;
+    pub const DIRI: f64 = 0.02;
     pub const INTRA_THREAD_NUM: u8 = 4;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     // 0 - free-style
@@ -23,7 +23,7 @@ pub mod cfg {
     // 4 - renju
     // 8 - caro
     // 1|8 - standard-caro
-    pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0100;
+    pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
     pub const RENDER_AT_EVAL: bool = true;
