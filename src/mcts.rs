@@ -257,7 +257,6 @@ impl MCTS {
             for c in children.iter() {
                 let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
                 if c_v > 0 {
-                    println!("...c_v: {}", c_v);
                     let idx = c.action as usize;
                     action_probs[idx] = (c_v as f64).powf((1.0).div(temp));
                     sum = sum + action_probs[idx];
@@ -407,12 +406,10 @@ impl MCTS {
                     node.expand(i as u16, action_priors[i]);
                 }
             }
-
-            node.backpropagate(value);
         } else {
             value = if color == Color::Blank { 0.0 } else { 1.0 };
-            node.backpropagate(value);
         }
+        node.backpropagate(value);
     }
 }
 
