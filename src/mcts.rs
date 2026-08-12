@@ -285,7 +285,7 @@ impl MCTS {
         join_all(simulations).await;
         let children = self.root.borrow().children.borrow().clone();
         // if first step???
-        let mut best_action = self.root.borrow().action;
+        let mut best_action = u16::MAX;
         let mut most_visits = 0;
         for c in children.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
@@ -394,6 +394,22 @@ mod tests {
 
     use super::*;
     use std::sync::atomic::Ordering;
+
+    #[tokio::test]
+    async fn get_best_action_on_first_move_returns_a_legal_action() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let mcts = MCTS::new(None, 1.0, 3.0, 20, game.get_action_size());
+
+        let action = mcts.get_best_action(&game).await;
+
+        assert_ne!(action, u16::MAX, "first move should not be invalid");
+        assert!(action < game.get_action_size());
+        assert_eq!(
+            game.get_legal_moves()[action as usize],
+            1,
+            "first move must come from the legal move set"
+        );
+    }
 
     #[tokio::test]
     async fn simulation_expands_and_backpropagates() {
