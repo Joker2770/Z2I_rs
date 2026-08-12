@@ -136,7 +136,7 @@ async fn run_eval_games(
             model_a.clone(),
             model_b.clone(),
             game_index % 2 == 0,
-            true,
+            cfg::RENDER_AT_EVAL,
             num_mcts_sim_a,
             num_mcts_sim_b,
         )

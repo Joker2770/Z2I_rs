@@ -21,4 +21,5 @@ pub mod cfg {
     pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
+    pub const RENDER_AT_EVAL: bool = false;
 }
