@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Joker2770
 
+use futures::future;
 use std::cell::RefCell;
 use std::ops::Div;
 use std::rc::{Rc, Weak};
@@ -107,12 +108,15 @@ impl MCTSNode {
             if value > best_value {
                 best_value = value;
                 best_child = Some(Rc::clone(&c));
-                let old_vl = self.virtual_loss.borrow().load(Ordering::SeqCst);
-                let new_vl = old_vl.saturating_add(1);
-                self.virtual_loss
-                    .borrow_mut()
-                    .store(new_vl, Ordering::SeqCst);
             }
+        }
+        if let Some(b_c) = best_child {
+            let old_vl = b_c.virtual_loss.borrow().load(Ordering::SeqCst);
+            let new_vl = old_vl.saturating_add(1);
+            b_c.virtual_loss
+                .borrow_mut()
+                .store(new_vl, Ordering::SeqCst);
+            best_child = Some(Rc::clone(&b_c));
         }
 
         best_child
@@ -221,8 +225,18 @@ impl MCTS {
     }
 
     pub async fn get_action_probs(&self, gomoku: &Gomoku, temp: f64) -> Vec<f64> {
-        for _ in 0..self.simulation_num {
-            self.simulation(gomoku).await;
+        // for _ in 0..self.simulation_num {
+        //     _ = self.simulation(gomoku).await;
+        // }
+        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
+            cfg::SIM_PER_BATCH as usize
+        } else {
+            1
+        };
+        let sim_batch = self.simulation_num.div(sim_per_batch) + 1;
+        for _ in 0..sim_batch {
+            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
         }
         let priors_size = gomoku.get_action_size() as usize;
         let mut action_probs = vec![0.0; priors_size];
@@ -294,9 +308,20 @@ impl MCTS {
     }
 
     pub async fn get_best_action(&self, gomoku: &Gomoku) -> u16 {
-        for _ in 0..self.simulation_num {
-            self.simulation(gomoku).await;
+        // for _ in 0..self.simulation_num {
+        //     self.simulation(gomoku).await;
+        // }
+        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
+            cfg::SIM_PER_BATCH as usize
+        } else {
+            1
+        };
+        let sim_batch = self.simulation_num.div(sim_per_batch) + 1;
+        for _ in 0..sim_batch {
+            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
         }
+
         let root = self.root.borrow();
         let children = root.children.borrow();
 
@@ -346,8 +371,12 @@ impl MCTS {
                 }
 
                 if let Some(c) = node.select(self.c_puct, self.c_virtual_loss) {
-                    g.execute_move(c.action);
-                    node = c;
+                    if g.execute_move(c.action) {
+                        node = Rc::clone(&c);
+                    } else {
+                        eprintln!("Illegal move!!!");
+                        drop(c);
+                    }
                 } else {
                     break;
                 }
@@ -377,7 +406,6 @@ impl MCTS {
                     .expect("inference failed");
                 action_priors = result.0;
                 value = result.1;
-
                 let mut sum = 0.0;
                 for i in 0..self.action_size {
                     if 1 == legal_hash_tab[i as usize] {

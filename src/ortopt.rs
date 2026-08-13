@@ -184,7 +184,9 @@ fn inference_loop(
 
         let max_batch_size = batch_size.load(Ordering::Relaxed);
         while tasks.len() < max_batch_size {
-            match request_receiver.recv_timeout(Duration::from_millis(1)) {
+            match request_receiver
+                .recv_timeout(Duration::from_micros(cfg::INFER_TASK_WAIT_US as u64))
+            {
                 Ok(task) => tasks.push(task),
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
