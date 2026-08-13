@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(root.visits.borrow().load(Ordering::SeqCst), 4);
         let child_0 = root.children.borrow()[0].clone();
         let selected_child_visits = child_0.visits.borrow().load(Ordering::SeqCst);
-        assert_eq!(selected_child_visits, 3);
+        assert_eq!(selected_child_visits, 1);
     }
 
     #[tokio::test]

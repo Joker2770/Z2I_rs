@@ -1,5 +1,7 @@
 # Z2I_rs
 
+[![Rust](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml)
+
 Z2I 的 Rust 重写版本。Z2I 是一个基于神经网络和 Monte Carlo Tree Search（MCTS）的 Gomoku/Renju AI；本项目将棋盘规则、MCTS、ONNX Runtime 推理和 Gomocup/Piskvork 引擎协议整合为一个 Rust 控制台程序。
 
 本项目适合与 [qpiskvork](https://github.com/Joker2770/qpiskvork) 这类 Gomoku manager 配合使用：manager 负责启动引擎、发送棋局命令和管理对局，`pbrain-Z2I_rs` 负责通过标准输入输出计算并返回落子。
