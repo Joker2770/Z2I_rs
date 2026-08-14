@@ -183,7 +183,11 @@ impl MCTS {
         MCTS {
             root: RefCell::new(Rc::new(MCTSNode::new())),
             neural_network,
-            simulation_num,
+            simulation_num: if simulation_num.load(Ordering::Relaxed) > 0 {
+                simulation_num
+            } else {
+                AtomicUsize::new(cfg::DEFAULT_SIMULATION_NUM)
+            },
             action_size,
             c_puct,
             c_virtual_loss,
