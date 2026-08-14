@@ -15,7 +15,7 @@ mod standard;
 
 use gomoku::Gomoku;
 use mcts::MCTS;
-use std::{cell::RefCell, env, fs, io::Write, rc::Rc};
+use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
 
 use crate::{
     configuration::cfg, gomoku::GameStage, ortopt::NeuralNetwork, play::SelfPlay, rule::Color,
@@ -67,14 +67,14 @@ pub async fn play_for_eval(
             nn_a,
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
-            num_mcts_sim_a as usize,
+            AtomicUsize::new(num_mcts_sim_a as usize),
             g_ref.borrow().get_action_size(),
         );
         let mut mb = MCTS::new(
             nn_b,
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
-            num_mcts_sim_b as usize,
+            AtomicUsize::new(num_mcts_sim_b as usize),
             g_ref.borrow().get_action_size(),
         );
 

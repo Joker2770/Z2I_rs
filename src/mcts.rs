@@ -166,7 +166,7 @@ impl MCTSNode {
 pub struct MCTS {
     root: RefCell<Rc<MCTSNode>>,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
-    simulation_num: usize,
+    simulation_num: AtomicUsize,
     action_size: u16,
     c_puct: f64,
     c_virtual_loss: f64,
@@ -177,16 +177,25 @@ impl MCTS {
         neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
         c_puct: f64,
         c_virtual_loss: f64,
-        simulation_num: usize,
-        a_s: u16,
+        simulation_num: AtomicUsize,
+        action_size: u16,
     ) -> Self {
         MCTS {
             root: RefCell::new(Rc::new(MCTSNode::new())),
             neural_network,
-            simulation_num: simulation_num,
-            action_size: a_s,
-            c_puct: c_puct,
-            c_virtual_loss: c_virtual_loss,
+            simulation_num,
+            action_size,
+            c_puct,
+            c_virtual_loss,
+        }
+    }
+
+    pub fn set_simulation_num(&mut self, sims_num: usize) -> bool {
+        if sims_num > 0 {
+            self.simulation_num.store(sims_num, Ordering::Release);
+            true
+        } else {
+            false
         }
     }
 
@@ -233,7 +242,11 @@ impl MCTS {
         } else {
             1
         };
-        let sim_batch = self.simulation_num.div(sim_per_batch) + 1;
+        let sim_batch = self
+            .simulation_num
+            .load(Ordering::Relaxed)
+            .div(sim_per_batch)
+            + 1;
         for _ in 0..sim_batch {
             let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
@@ -316,7 +329,11 @@ impl MCTS {
         } else {
             1
         };
-        let sim_batch = self.simulation_num.div(sim_per_batch) + 1;
+        let sim_batch = self
+            .simulation_num
+            .load(Ordering::Relaxed)
+            .div(sim_per_batch)
+            + 1;
         for _ in 0..sim_batch {
             let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
@@ -451,7 +468,7 @@ mod tests {
     #[tokio::test]
     async fn get_best_action_on_first_move_returns_a_legal_action() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, 1, game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
 
         let action = mcts.get_best_action(&game).await;
 
@@ -467,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn simulation_expands_and_backpropagates() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, 1, game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
 
         mcts.simulation(&game).await;
 
@@ -497,7 +514,7 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_returns_normalized_legal_probs() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, 2, game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(2), game.get_action_size());
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 
@@ -515,7 +532,7 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_falls_back_to_priors_after_one_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, 1, game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 

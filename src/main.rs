@@ -20,6 +20,7 @@ use std::{
     io::{self, BufRead, Write},
     path::{Path, PathBuf},
     rc::Rc,
+    sync::atomic::AtomicUsize,
 };
 
 use crate::{
@@ -173,7 +174,7 @@ impl Brain {
             self.neural_network.clone(),
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS,
-            self.simulation_num,
+            AtomicUsize::new(self.simulation_num),
             action_size,
         )
     }

@@ -4,7 +4,7 @@
 use rand::{self, RngExt};
 use rand_distr::{Distribution, Gamma};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, env, fs, io::Write, ops::Div, rc::Rc};
+use std::{cell::RefCell, env, fs, io::Write, ops::Div, rc::Rc, sync::atomic::AtomicUsize};
 
 use crate::{
     configuration::cfg,
@@ -37,7 +37,7 @@ impl SelfPlay {
                 nn,
                 cfg::C_PUCT as f64,
                 cfg::C_VIRTUAL_LOSS as f64,
-                cfg::DEFAULT_SIMULATION_NUM,
+                AtomicUsize::new(cfg::DEFAULT_SIMULATION_NUM),
                 action_size,
             );
 
