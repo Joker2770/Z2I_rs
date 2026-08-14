@@ -207,9 +207,18 @@ impl Brain {
     }
 
     fn play_opponent_move(&mut self, action: u16) -> bool {
-        self.game
+        let is_succeed = self
+            .game
             .as_mut()
-            .is_some_and(|game| game.execute_move(action))
+            .is_some_and(|game| game.execute_move(action));
+        if is_succeed {
+            let game = self.game.as_ref().unwrap();
+            self.mcts
+                .as_mut()
+                .unwrap()
+                .update_root_with_action(&game, action);
+        };
+        is_succeed
     }
 
     async fn begin(&mut self) -> Option<u16> {
@@ -379,7 +388,7 @@ async fn run_protocol() {
                     if let Some(response) = brain.turn(action).await {
                         output_move(response, board_size(brain.game.as_ref().unwrap()));
                     } else {
-                        println!("ERROR invalid turn");
+                        println!("ERROR no response");
                     }
                 } else {
                     println!("ERROR invalid turn");
@@ -393,7 +402,7 @@ async fn run_protocol() {
                     }
                 }
             }
-            "ABOUT" => println!("name=\"Z2I_rs\", version=\"0.1.0\", author=\"Z2I\""),
+            "ABOUT" => println!("name=\"Z2I_rs\", version=\"0.1.0\", author=\"Joker2770\""),
             "END" => break,
             _ => println!("UNKNOWN"),
         }

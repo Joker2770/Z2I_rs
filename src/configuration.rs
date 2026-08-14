@@ -27,7 +27,7 @@ pub mod cfg {
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
     pub const RENDER_AT_EVAL: bool = true;
-    pub const INFER_TASK_WAIT_US: u16 = 128;
+    pub const INFER_TASK_WAIT_US: u16 = 64;
     // suggest < 256, and >= 1
     pub const SIM_PER_BATCH: u16 = 16;
 }
