@@ -196,7 +196,7 @@ impl Brain {
     async fn play_move(&mut self) -> Option<u16> {
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
-        let probs = mcts.get_action_probs(game, 1e-3).await;
+        let probs = mcts.get_action_probs(game, cfg::GREEDY_TEMP).await;
         let action = mcts.get_best_action_from_probs(&probs);
         let game = self.game.as_mut()?;
         if !game.execute_move(action) {
