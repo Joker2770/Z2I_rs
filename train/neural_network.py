@@ -284,14 +284,15 @@ class NeuralNetWorkWrapper():
 
         self.neural_network.cpu()
         example = torch.rand(1, self.input_channel_size, self.n, self.n).cpu()
-        dynamic_axes={"board":{0:"batch_size"},     # 批处理变量
-                                    "P":{0:"batch_size"},"V":{0:"batch_size"}}
+        dynamic_shapes={"board":{0:"batch_size"},
+                        "P":{0:"batch_size"}, "V":{0:"batch_size"}}
         torch.onnx.export(self.neural_network,
                           example,
                           filepath+'.onnx',
                           input_names=["board"],
                           output_names=['P', 'V'],
-                          dynamic_axes=dynamic_axes)
+                          dynamo=True,
+                          dynamic_shapes=dynamic_shapes)
 
 
 if __name__ == '__main__':
