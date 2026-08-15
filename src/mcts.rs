@@ -348,6 +348,10 @@ impl MCTS {
     }
 
     pub async fn get_best_action(&self, gomoku: &Gomoku) -> u16 {
+        self.get_best_action_within(gomoku, None).await
+    }
+
+    pub async fn get_best_action_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) -> u16 {
         // for _ in 0..self.simulation_num {
         //     self.simulation(gomoku).await;
         // }
@@ -361,9 +365,18 @@ impl MCTS {
             .load(Ordering::Relaxed)
             .div(sim_per_batch)
             + 1;
+        let mut batches_done = 0usize;
         for _ in 0..sim_batch {
+            if batches_done > 0 {
+                if let Some(deadline) = deadline {
+                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
+                        break;
+                    }
+                }
+            }
             let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
+            batches_done += 1;
         }
 
         let root = self.root.borrow();
@@ -388,6 +401,32 @@ impl MCTS {
             }
         }
         best_action
+    }
+
+    pub async fn simulation_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) {
+        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
+            cfg::SIM_PER_BATCH as usize
+        } else {
+            1
+        };
+        let sim_batch = self
+            .simulation_num
+            .load(Ordering::Relaxed)
+            .div(sim_per_batch)
+            + 1;
+        let mut batches_done = 0usize;
+        for _ in 0..sim_batch {
+            if batches_done > 0 {
+                if let Some(deadline) = deadline {
+                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
+                        break;
+                    }
+                }
+            }
+            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
+            batches_done += 1;
+        }
     }
 
     pub fn get_best_action_after_simulation(&self, gomoku: &Gomoku) -> u16 {
@@ -617,7 +656,13 @@ mod tests {
     async fn future_deadline_runs_all_configured_simulations() {
         let game = Gomoku::new(15, 5).expect("valid test board");
         let sims = 32;
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(sims), game.get_action_size());
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(sims),
+            game.get_action_size(),
+        );
 
         let deadline = Instant::now() + Duration::from_secs(60);
         let probs = mcts
