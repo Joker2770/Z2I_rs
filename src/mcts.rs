@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::ops::Div;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tokio::task;
 
 use crate::configuration::cfg;
@@ -238,6 +239,19 @@ impl MCTS {
     }
 
     pub async fn get_action_probs(&self, gomoku: &Gomoku, temp: f64) -> Vec<f64> {
+        self.get_action_probs_within(gomoku, temp, None).await
+    }
+
+    /// 在截止时间前尽可能多地执行仿真批次：
+    /// - `deadline` 为 `None`：跑满配置的仿真次数；
+    /// - 否则至少执行一批（保证根节点有子节点可选出着法），
+    ///   之后每批开始前若时间盈余不足 `TIME_RESERVE_MS` 毫秒即停止仿真。
+    pub async fn get_action_probs_within(
+        &self,
+        gomoku: &Gomoku,
+        temp: f64,
+        deadline: Option<Instant>,
+    ) -> Vec<f64> {
         // for _ in 0..self.simulation_num {
         //     _ = self.simulation(gomoku).await;
         // }
@@ -251,9 +265,18 @@ impl MCTS {
             .load(Ordering::Relaxed)
             .div(sim_per_batch)
             + 1;
+        let mut batches_done = 0usize;
         for _ in 0..sim_batch {
+            if batches_done > 0 {
+                if let Some(deadline) = deadline {
+                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
+                        break;
+                    }
+                }
+            }
             let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
+            batches_done += 1;
         }
         let priors_size = gomoku.get_action_size() as usize;
         let mut action_probs = vec![0.0; priors_size];
@@ -567,6 +590,44 @@ mod tests {
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(probs.iter().all(|probability| *probability >= 0.0));
+    }
+
+    #[tokio::test]
+    async fn past_deadline_stops_after_first_batch() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(2048),
+            game.get_action_size(),
+        );
+
+        let deadline = Instant::now();
+        let probs = mcts
+            .get_action_probs_within(&game, 1.0, Some(deadline))
+            .await;
+
+        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
+        assert_eq!(root_visits, cfg::SIM_PER_BATCH as usize);
+    }
+
+    #[tokio::test]
+    async fn future_deadline_runs_all_configured_simulations() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let sims = 32;
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(sims), game.get_action_size());
+
+        let deadline = Instant::now() + Duration::from_secs(60);
+        let probs = mcts
+            .get_action_probs_within(&game, 1.0, Some(deadline))
+            .await;
+
+        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        let expected = (sims / cfg::SIM_PER_BATCH as usize + 1) * cfg::SIM_PER_BATCH as usize;
+        let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
+        assert_eq!(root_visits, expected);
     }
 
     #[test]

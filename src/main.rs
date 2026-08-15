@@ -21,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::AtomicUsize,
+    time::{Duration, Instant},
 };
 
 use crate::{
@@ -115,6 +116,7 @@ struct Brain {
     ai_color: Color,
     rule: RuleFlag,
     simulation_num: usize,
+    timeout_turn: Option<u64>,
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
     loaded_model_path: Option<PathBuf>,
@@ -128,6 +130,7 @@ impl Brain {
             mcts: None,
             ai_color: Color::Black,
             rule: RuleFlag::FreeStyle,
+            timeout_turn: None,
             simulation_num: config.mcts.num_mct_sims,
             config,
             neural_network: None,
@@ -187,6 +190,13 @@ impl Brain {
         )
     }
 
+    /// 依据 `INFO timeout_turn`（毫秒，0=尽快落子）计算思考截止时间；
+    /// `None` 表示未收到该指令，不限制思考时间（跑满配置的仿真数）。
+    fn think_deadline(&self) -> Option<Instant> {
+        self.timeout_turn
+            .map(|ms| Instant::now() + Duration::from_millis(ms))
+    }
+
     fn start(&mut self, size: u8) -> bool {
         let Some(mut game) = Gomoku::new(size, cfg::N_IN_ROW) else {
             return false;
@@ -220,8 +230,8 @@ impl Brain {
         }
         let action_size = game.get_action_size();
         let new_path = self.resolve_model_path();
-        let model_unchanged = self.loaded_model_path.as_ref() == Some(&new_path)
-            && self.neural_network.is_some();
+        let model_unchanged =
+            self.loaded_model_path.as_ref() == Some(&new_path) && self.neural_network.is_some();
         if !model_unchanged {
             self.load_neural_network();
             self.mcts = Some(self.new_mcts(action_size));
@@ -231,7 +241,9 @@ impl Brain {
     async fn play_move(&mut self) -> Option<u16> {
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
-        let probs = mcts.get_action_probs(game, cfg::GREEDY_TEMP).await;
+        let probs = mcts
+            .get_action_probs_within(game, cfg::GREEDY_TEMP, self.think_deadline())
+            .await;
         let action = mcts.get_best_action_from_probs(&probs);
         let game = self.game.as_mut()?;
         if !game.execute_move(action) {
@@ -431,10 +443,23 @@ async fn run_protocol() {
             }
             "BOARD" => board_lines = Some(Vec::new()),
             "INFO" => {
-                if fields.next() == Some("rule") {
-                    if let Some(value) = fields.next().and_then(|value| value.parse::<u8>().ok()) {
-                        brain.apply_rule(RuleFlag::from_bits_truncate(value));
+                let key = fields.next().map(|key| key.to_ascii_lowercase());
+                match key.as_deref() {
+                    Some("rule") => {
+                        if let Some(value) =
+                            fields.next().and_then(|value| value.parse::<u8>().ok())
+                        {
+                            brain.apply_rule(RuleFlag::from_bits_truncate(value));
+                        }
                     }
+                    Some("timeout_turn") => {
+                        if let Some(value) =
+                            fields.next().and_then(|value| value.parse::<u64>().ok())
+                        {
+                            brain.timeout_turn = Some(value);
+                        }
+                    }
+                    _ => {}
                 }
             }
             "ABOUT" => println!("name=\"Z2I_rs\", version=\"0.1.0\", author=\"Joker2770\""),
@@ -467,6 +492,27 @@ mod tests {
         assert_eq!(parse_coordinates("10,11,1"), None);
         assert_eq!(action_from_coordinates(15, 10, 11), Some(175));
         assert_eq!(action_from_coordinates(15, 15, 11), None);
+    }
+
+    #[test]
+    fn timeout_turn_is_unlimited_by_default() {
+        let brain = test_brain();
+        assert!(brain.think_deadline().is_none());
+    }
+
+    #[test]
+    fn zero_timeout_turn_sets_immediate_deadline() {
+        let mut brain = test_brain();
+        brain.timeout_turn = Some(0);
+        let deadline = brain.think_deadline().expect("deadline should be set");
+        assert!(deadline <= Instant::now() + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn positive_timeout_turn_sets_future_deadline() {
+        let mut brain = test_brain();
+        brain.timeout_turn = Some(60_000);
+        assert!(brain.think_deadline().expect("deadline should be set") > Instant::now());
     }
 
     #[test]
@@ -507,7 +553,10 @@ mod tests {
 
         brain.apply_rule(RuleFlag::FreeStyle);
 
-        assert_eq!(brain.game.as_ref().unwrap().get_rule(), &RuleFlag::FreeStyle);
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_rule(),
+            &RuleFlag::FreeStyle
+        );
         assert_eq!(brain.game.as_ref().unwrap().get_last_move(), -1);
         assert!(brain.mcts.is_some());
     }

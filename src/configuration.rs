@@ -26,6 +26,8 @@ pub mod cfg {
     pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
+    // 思考时间盈余阈值（毫秒）：剩余时间不足该值时停止仿真、立即落子
+    pub const TIME_RESERVE_MS: u64 = 512;
     pub const RENDER_AT_EVAL: bool = true;
     pub const INFER_TASK_WAIT_US: u16 = 64;
     // suggest < 256, and >= 1
