@@ -12,10 +12,8 @@ pub mod cfg {
     pub const DEFAULT_SIMULATION_NUM: usize = 1024;
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
-    pub const OUTPUT_0_NAME: &str = "V";
-    pub const OUTPUT_1_NAME: &str = "P";
     pub const EXPLORE_STEP: u16 = BOARD_SIZE as u16 * BOARD_SIZE as u16;
-    pub const DIRI: f64 = 0.02;
+    pub const DIRI: f64 = 0.01;
     pub const INTRA_THREAD_NUM: u8 = 4;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     // 0 - free-style

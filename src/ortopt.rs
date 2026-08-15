@@ -53,6 +53,11 @@ impl NeuralNetwork {
             .iter()
             .map(|item| item.name().to_string())
             .collect();
+        let output_names: Vec<String> = session
+            .outputs()
+            .iter()
+            .map(|item| item.name().to_string())
+            .collect();
 
         let batch_size = if bs <= cfg::MAX_BATCH_SIZE as usize && bs >= cfg::MIN_BATCH_SIZE as usize
         {
@@ -61,10 +66,6 @@ impl NeuralNetwork {
             cfg::DEFAULT_BATCH_SIZE as usize
         };
 
-        let output_names = vec![
-            cfg::OUTPUT_0_NAME.to_string(),
-            cfg::OUTPUT_1_NAME.to_string(),
-        ];
         let batch_size = Arc::new(AtomicUsize::new(batch_size));
         let worker_batch_size = Arc::clone(&batch_size);
         let (request_sender, request_receiver) = mpsc::channel();
@@ -242,11 +243,11 @@ fn infer_batch(
     };
 
     let outputs: SessionOutputs = session.run(inputs).map_err(|error| error.to_string())?;
-    let v_arr = outputs[output_names[0].as_str()]
+    let v_arr = outputs[output_names[1].as_str()]
         .try_extract_array::<f32>()
         .map_err(|error| error.to_string())?
         .into_owned();
-    let p_arr = outputs[output_names[1].as_str()]
+    let p_arr = outputs[output_names[0].as_str()]
         .try_extract_array::<f32>()
         .map_err(|error| error.to_string())?
         .into_owned();
