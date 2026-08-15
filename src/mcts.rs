@@ -367,6 +367,31 @@ impl MCTS {
         best_action
     }
 
+    pub fn get_best_action_after_simulation(&self, gomoku: &Gomoku) -> u16 {
+        let root = self.root.borrow();
+        let children = root.children.borrow();
+
+        if children.is_empty() {
+            for (action, legal) in gomoku.get_legal_moves().iter().enumerate() {
+                if *legal == 1 {
+                    return action as u16;
+                }
+            }
+            return u16::MAX;
+        }
+
+        let mut best_action = u16::MAX;
+        let mut most_visits = 0usize;
+        for c in children.iter() {
+            let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
+            if c_v >= most_visits {
+                most_visits = c_v;
+                best_action = c.action;
+            }
+        }
+        best_action
+    }
+
     pub fn get_action_by_sample(&self, probs: &Vec<f64>) -> u16 {
         let r = rand::random();
         let mut idx = 0;
