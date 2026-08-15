@@ -117,6 +117,7 @@ struct Brain {
     simulation_num: usize,
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
+    loaded_model_path: Option<PathBuf>,
 }
 
 impl Brain {
@@ -130,12 +131,13 @@ impl Brain {
             simulation_num: config.mcts.num_mct_sims,
             config,
             neural_network: None,
+            loaded_model_path: None,
         }
     }
 
-    fn load_neural_network(&mut self) -> bool {
+    fn resolve_model_path(&self) -> PathBuf {
         let model_path = self.config.model_path(self.rule);
-        let path = if model_path.is_absolute() {
+        if model_path.is_absolute() {
             model_path.to_path_buf()
         } else {
             let candidates = [
@@ -149,21 +151,27 @@ impl Brain {
                 .flatten()
                 .find(|candidate| candidate.exists())
                 .unwrap_or_else(|| model_path.to_path_buf())
-        };
+        }
+    }
 
+    fn load_neural_network(&mut self) -> bool {
+        let path = self.resolve_model_path();
         if !path.exists() {
             eprintln!("ERROR model not found: {}", path.display());
             self.neural_network = None;
+            self.loaded_model_path = None;
             return false;
         }
         match NeuralNetwork::new(&path, cfg::DEFAULT_BATCH_SIZE as usize) {
             Ok(network) => {
                 self.neural_network = Some(Rc::new(RefCell::new(network)));
+                self.loaded_model_path = Some(path);
                 true
             }
             Err(error) => {
                 eprintln!("INFO failed to load model {}: {error}", path.display());
                 self.neural_network = None;
+                self.loaded_model_path = None;
                 false
             }
         }
@@ -191,6 +199,33 @@ impl Brain {
         self.game = Some(game);
         self.mcts = Some(self.new_mcts(action_size));
         true
+    }
+
+    /// 处理 `INFO rule <value>` 命令（该命令可能先于或晚于 START 到达）：
+    /// - 规则未变化：直接返回，避免重复加载模型、浪费对局时间；
+    /// - START 之前（尚无对局）：仅记录规则，模型将在 START 时按新规则加载；
+    /// - START 之后、尚未落子：棋盘应用新规则；仅当新规则对应的模型与当前
+    ///   已加载的模型不同（或尚未加载）时，才重新加载模型并重建 MCTS；
+    /// - 已落子之后：不打断进行中的对局，新规则仅对下一局生效。
+    fn apply_rule(&mut self, rule: RuleFlag) {
+        if rule == self.rule {
+            return;
+        }
+        self.rule = rule;
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        if !game.set_rule(rule) {
+            return;
+        }
+        let action_size = game.get_action_size();
+        let new_path = self.resolve_model_path();
+        let model_unchanged = self.loaded_model_path.as_ref() == Some(&new_path)
+            && self.neural_network.is_some();
+        if !model_unchanged {
+            self.load_neural_network();
+            self.mcts = Some(self.new_mcts(action_size));
+        }
     }
 
     async fn play_move(&mut self) -> Option<u16> {
@@ -398,7 +433,7 @@ async fn run_protocol() {
             "INFO" => {
                 if fields.next() == Some("rule") {
                     if let Some(value) = fields.next().and_then(|value| value.parse::<u8>().ok()) {
-                        brain.rule = RuleFlag::from_bits_truncate(value);
+                        brain.apply_rule(RuleFlag::from_bits_truncate(value));
                     }
                 }
             }
@@ -452,6 +487,70 @@ mod tests {
                 .sum::<u8>(),
             225
         );
+    }
+
+    #[test]
+    fn info_rule_before_start_is_applied_on_start() {
+        let mut brain = test_brain();
+
+        brain.apply_rule(RuleFlag::Standard);
+        assert!(brain.start(15));
+
+        assert_eq!(brain.game.as_ref().unwrap().get_rule(), &RuleFlag::Standard);
+        assert!(brain.mcts.is_some());
+    }
+
+    #[test]
+    fn repeated_same_rule_after_start_is_noop() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        brain.apply_rule(RuleFlag::FreeStyle);
+
+        assert_eq!(brain.game.as_ref().unwrap().get_rule(), &RuleFlag::FreeStyle);
+        assert_eq!(brain.game.as_ref().unwrap().get_last_move(), -1);
+        assert!(brain.mcts.is_some());
+    }
+
+    #[test]
+    fn apply_rule_after_start_reinitializes_game_and_mcts() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        brain.apply_rule(RuleFlag::Renju);
+
+        assert_eq!(brain.rule, RuleFlag::Renju);
+        assert_eq!(brain.game.as_ref().unwrap().get_rule(), &RuleFlag::Renju);
+        assert!(brain.mcts.is_some());
+    }
+
+    #[tokio::test]
+    async fn apply_rule_before_first_move_keeps_game_playable() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        brain.apply_rule(RuleFlag::Standard);
+        let action = brain.begin().await.expect("BEGIN should return a move");
+
+        assert!(action < 225);
+        assert_eq!(brain.game.as_ref().unwrap().get_rule(), &RuleFlag::Standard);
+        assert_eq!(brain.game.as_ref().unwrap().get_cur_color(), &Color::White);
+    }
+
+    #[tokio::test]
+    async fn apply_rule_after_move_does_not_touch_game() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        let action = brain.begin().await.expect("BEGIN should return a move");
+        brain.apply_rule(RuleFlag::Renju);
+
+        assert_eq!(brain.rule, RuleFlag::Renju);
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_rule(),
+            &RuleFlag::FreeStyle
+        );
+        assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
     }
 
     #[tokio::test]
