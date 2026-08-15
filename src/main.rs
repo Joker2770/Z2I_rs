@@ -152,7 +152,7 @@ impl Brain {
         };
 
         if !path.exists() {
-            eprintln!("INFO model not found: {}", path.display());
+            eprintln!("ERROR model not found: {}", path.display());
             self.neural_network = None;
             return false;
         }
