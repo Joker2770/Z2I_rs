@@ -305,6 +305,8 @@ async fn main() {
                 .expect("Unable to open file")
                 .write_all(result_log_info.as_bytes())
                 .expect("Unable to write data");
+        } else {
+            eprintln!("Failed to read current and best weights!!!");
         }
     } else if args[1] == "eval_with_random" && args.len() == 3 {
         let mut current_weight_id = 0;
@@ -317,6 +319,8 @@ async fn main() {
             let mut num_random_mcts_sim = 0;
             if let Ok(content) = fs::read_to_string("random_mcts_number.txt") {
                 num_random_mcts_sim = content.trim().parse().unwrap();
+            } else {
+                eprintln!("Failed to read random MCTS number!!!");
             }
 
             let game_num: u16 = args[2].parse().expect("Parameter Error!!!");
@@ -363,6 +367,8 @@ async fn main() {
                 .expect("Unable to open file")
                 .write_all(result_log_info.as_bytes())
                 .expect("Unable to write data");
+        } else {
+            eprintln!("Failed to read current and best weights!!!");
         }
     } else {
         println!("Hello, world!");
