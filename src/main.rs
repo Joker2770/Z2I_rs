@@ -259,11 +259,11 @@ impl Brain {
             .as_mut()
             .is_some_and(|game| game.execute_move(action));
         if is_succeed {
-            let game = self.game.as_ref().unwrap();
-            self.mcts
-                .as_mut()
-                .unwrap()
-                .update_root_with_action(&game, action);
+            if let Some(g) = self.game.as_ref()
+                && let Some(m) = self.mcts.as_mut()
+            {
+                m.update_root_with_action(&g, action);
+            }
         };
         is_succeed
     }
