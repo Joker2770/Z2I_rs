@@ -171,6 +171,7 @@ pub struct MCTS {
     action_size: u16,
     c_puct: f64,
     c_virtual_loss: f64,
+    sim_per_batch: u8,
 }
 
 impl MCTS {
@@ -181,6 +182,12 @@ impl MCTS {
         simulation_num: AtomicUsize,
         action_size: u16,
     ) -> Self {
+        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 255 {
+            cfg::SIM_PER_BATCH
+        } else {
+            1
+        };
+
         MCTS {
             root: RefCell::new(Rc::new(MCTSNode::new())),
             neural_network,
@@ -192,6 +199,7 @@ impl MCTS {
             action_size,
             c_puct,
             c_virtual_loss,
+            sim_per_batch,
         }
     }
 
@@ -255,29 +263,8 @@ impl MCTS {
         // for _ in 0..self.simulation_num {
         //     _ = self.simulation(gomoku).await;
         // }
-        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
-            cfg::SIM_PER_BATCH as usize
-        } else {
-            1
-        };
-        let sim_batch = self
-            .simulation_num
-            .load(Ordering::Relaxed)
-            .div(sim_per_batch)
-            + 1;
-        let mut batches_done = 0usize;
-        for _ in 0..sim_batch {
-            if batches_done > 0 {
-                if let Some(deadline) = deadline {
-                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
-                        break;
-                    }
-                }
-            }
-            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
-            future::join_all(simulations).await;
-            batches_done += 1;
-        }
+        self.simulation_within(gomoku, deadline).await;
+
         let priors_size = gomoku.get_action_size() as usize;
         let mut action_probs = vec![0.0; priors_size];
         let root = self.root.borrow();
@@ -355,29 +342,7 @@ impl MCTS {
         // for _ in 0..self.simulation_num {
         //     self.simulation(gomoku).await;
         // }
-        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
-            cfg::SIM_PER_BATCH as usize
-        } else {
-            1
-        };
-        let sim_batch = self
-            .simulation_num
-            .load(Ordering::Relaxed)
-            .div(sim_per_batch)
-            + 1;
-        let mut batches_done = 0usize;
-        for _ in 0..sim_batch {
-            if batches_done > 0 {
-                if let Some(deadline) = deadline {
-                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
-                        break;
-                    }
-                }
-            }
-            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
-            future::join_all(simulations).await;
-            batches_done += 1;
-        }
+        self.simulation_within(gomoku, deadline).await;
 
         let root = self.root.borrow();
         let children = root.children.borrow();
@@ -404,15 +369,10 @@ impl MCTS {
     }
 
     pub async fn simulation_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) {
-        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 256 {
-            cfg::SIM_PER_BATCH as usize
-        } else {
-            1
-        };
         let sim_batch = self
             .simulation_num
             .load(Ordering::Relaxed)
-            .div(sim_per_batch)
+            .div(self.sim_per_batch as usize)
             + 1;
         let mut batches_done = 0usize;
         for _ in 0..sim_batch {
@@ -423,7 +383,7 @@ impl MCTS {
                     }
                 }
             }
-            let simulations = (0..sim_per_batch).map(|_| self.simulation(gomoku));
+            let simulations = (0..self.sim_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
             batches_done += 1;
         }
