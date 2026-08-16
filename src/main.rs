@@ -241,10 +241,8 @@ impl Brain {
     async fn play_move(&mut self) -> Option<u16> {
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
-        let probs = mcts
-            .get_action_probs_within(game, cfg::GREEDY_TEMP, self.think_deadline())
-            .await;
-        let action = mcts.get_best_action_from_probs(&probs);
+        mcts.simulation_within(game, self.think_deadline()).await;
+        let action = mcts.get_best_action_after_simulation(game);
         let game = self.game.as_mut()?;
         if !game.execute_move(action) {
             return None;
