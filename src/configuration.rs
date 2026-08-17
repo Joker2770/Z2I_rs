@@ -9,7 +9,7 @@ pub mod cfg {
     pub const C_VIRTUAL_LOSS: f64 = 3.0;
     pub const CHANNEL_SIZE: u8 = 3;
     pub const DEFAULT_BATCH_SIZE: u16 = 128;
-    pub const DEFAULT_SIMULATION_NUM: usize = 1024;
+    pub const DEFAULT_SIMULATION_NUM: usize = 2048;
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
     pub const EXPLORE_STEP: u16 = BOARD_SIZE as u16 * BOARD_SIZE as u16;
@@ -27,7 +27,7 @@ pub mod cfg {
     // 思考时间盈余阈值（毫秒）：剩余时间不足该值时停止仿真、立即落子
     pub const TIME_RESERVE_MS: u64 = 512;
     pub const RENDER_AT_EVAL: bool = true;
-    pub const INFER_TASK_WAIT_US: u16 = 64;
+    pub const INFER_TASK_WAIT_US: u16 = 32;
     // suggest < 256, and >= 1
     pub const SIM_PER_BATCH: u8 = 16;
 }
