@@ -189,11 +189,11 @@ impl SelfPlay {
     }
 
     pub async fn self_play_for_train(&self, game_num: u16, start_batch_id: u16) {
-        if self.neural_network.borrow().get_batch_size() < cfg::DEFAULT_BATCH_SIZE as usize {
-            self.neural_network
-                .borrow_mut()
-                .set_batch_size(game_num as usize * cfg::DEFAULT_BATCH_SIZE as usize);
-        }
+        // if self.neural_network.borrow().get_batch_size() < cfg::DEFAULT_BATCH_SIZE as usize {
+        //     self.neural_network
+        //         .borrow_mut()
+        //         .set_batch_size(game_num as usize * cfg::DEFAULT_BATCH_SIZE as usize);
+        // }
         for i in 0..game_num {
             self.play(start_batch_id + i).await;
         }

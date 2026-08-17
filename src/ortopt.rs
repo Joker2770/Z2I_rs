@@ -40,7 +40,7 @@ pub struct NeuralNetwork {
 }
 
 impl NeuralNetwork {
-    pub fn new(model_path: &Path, bs: usize) -> Result<Self, Box<dyn error::Error>> {
+    pub fn new(model_path: &Path, batch_size: usize) -> Result<Self, Box<dyn error::Error>> {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
         ortcommon::init()?;
 
@@ -59,14 +59,15 @@ impl NeuralNetwork {
             .map(|item| item.name().to_string())
             .collect();
 
-        let batch_size = if bs <= cfg::MAX_BATCH_SIZE as usize && bs >= cfg::MIN_BATCH_SIZE as usize
+        let b_s = if batch_size <= cfg::MAX_BATCH_SIZE as usize
+            && batch_size >= cfg::MIN_BATCH_SIZE as usize
         {
-            bs
+            batch_size
         } else {
             cfg::DEFAULT_BATCH_SIZE as usize
         };
 
-        let batch_size = Arc::new(AtomicUsize::new(batch_size));
+        let batch_size = Arc::new(AtomicUsize::new(b_s));
         let worker_batch_size = Arc::clone(&batch_size);
         let (request_sender, request_receiver) = mpsc::channel();
         thread::Builder::new()
@@ -74,8 +75,8 @@ impl NeuralNetwork {
             .spawn(move || {
                 inference_loop(
                     session,
-                    input_names,
-                    output_names,
+                    &input_names,
+                    &output_names,
                     worker_batch_size,
                     request_receiver,
                 )
@@ -171,8 +172,8 @@ impl NeuralNetwork {
 
 fn inference_loop(
     mut session: Session,
-    input_node_names: Vec<String>,
-    output_names: Vec<String>,
+    input_node_names: &[String],
+    output_names: &[String],
     batch_size: Arc<AtomicUsize>,
     request_receiver: Receiver<InferenceTask>,
 ) {
