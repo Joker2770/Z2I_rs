@@ -7,7 +7,7 @@ edition = "2024"
 default = []
 training = ["ort/training"]
 cuda = ["ort/cuda", "ort/load-dynamic"]
-openvino = ["ort/openvino"]
+openvino = ["ort/openvino", "ort/load-dynamic"]
 
 [dependencies]
 bitflags = "2.13.1"
