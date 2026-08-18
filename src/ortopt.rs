@@ -36,7 +36,6 @@ struct InferenceTask {
 #[derive(Debug)]
 pub struct NeuralNetwork {
     request_sender: Sender<InferenceTask>,
-    batch_size: Arc<AtomicUsize>,
 }
 
 impl NeuralNetwork {
@@ -84,14 +83,9 @@ impl NeuralNetwork {
 
         let nn = NeuralNetwork {
             request_sender,
-            batch_size,
         };
 
         Ok(nn)
-    }
-
-    pub fn get_batch_size(&self) -> usize {
-        self.batch_size.load(Ordering::Relaxed)
     }
 
     pub fn transform_board_2_tensor(
@@ -158,15 +152,6 @@ impl NeuralNetwork {
             })
             .map_err(|error| error.to_string())?;
         Ok(response_receiver)
-    }
-
-    pub fn set_batch_size(&mut self, bs: usize) -> bool {
-        if bs <= cfg::MAX_BATCH_SIZE as usize && bs >= cfg::MIN_BATCH_SIZE as usize {
-            self.batch_size.store(bs, Ordering::Relaxed);
-            true
-        } else {
-            false
-        }
     }
 }
 
