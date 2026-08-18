@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::ops::Div;
 use std::rc::{Rc, Weak};
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tokio::task;
 
@@ -172,6 +173,9 @@ pub struct MCTS {
     c_puct: f64,
     c_virtual_loss: f64,
     sim_per_batch: u8,
+    /// 串行化对搜索树的读写（select 下降 / expand / backpropagate），
+    /// 避免多个并发仿真任务同时抢占 select。锁内不能包含 `.await`。
+    tree_lock: Mutex<()>,
 }
 
 impl MCTS {
@@ -200,6 +204,7 @@ impl MCTS {
             c_puct,
             c_virtual_loss,
             sim_per_batch,
+            tree_lock: Mutex::new(()),
         }
     }
 
@@ -429,7 +434,10 @@ impl MCTS {
     }
 
     pub async fn simulation(&self, gomoku: &Gomoku) {
+        // 阶段一：持锁执行 select 下降。锁把多个并发仿真任务的树内选择串行化，
+        // 避免它们同时抢占 select、选到同一分支或并发修改 virtual_loss。
         let (node, mut g) = {
+            let _select_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
             let mut node = Rc::clone(&self.root.borrow());
             let mut g = gomoku.clone();
 
@@ -451,7 +459,7 @@ impl MCTS {
             }
 
             (node, g)
-        };
+        }; // 推理前释放锁，锁内不包含 .await
 
         let (game_stage, color) = {
             let status = g.get_game_status();
@@ -498,15 +506,19 @@ impl MCTS {
                 }
             }
 
+            // 阶段二：持锁完成 expand 与 backpropagate，保证树变更的原子性
+            let _tree_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
             for (i, v) in legal_hash_tab.iter().enumerate() {
                 if *v == 1 {
                     node.expand(i as u16, action_priors[i]);
                 }
             }
+            node.backpropagate(value);
         } else {
             value = if color == Color::Blank { 0.0 } else { 1.0 };
+            let _tree_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
+            node.backpropagate(value);
         }
-        node.backpropagate(value);
     }
 }
 
