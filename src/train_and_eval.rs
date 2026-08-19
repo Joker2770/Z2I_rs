@@ -216,10 +216,10 @@ async fn main() {
 
         let mut f_1 =
             fs::File::create("current_and_best_weight.txt").expect("Unable to create file");
-        _ = f_1.write_all(b"0 0");
+        _ = f_1.write_all("0 0".as_bytes());
 
         let mut f_2 = fs::File::create("random_mcts_number.txt").expect("Unable to create file");
-        _ = f_2.write_all(&cfg::DEFAULT_SIMULATION_NUM.to_ne_bytes());
+        _ = f_2.write_all(&cfg::DEFAULT_SIMULATION_NUM.to_string().as_bytes());
         println!("Next: Generate initial weight by python.");
     } else if args[1] == "generate" && args.len() == 3 {
         println!("Generate {} -th batch.", args[2]);
