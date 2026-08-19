@@ -51,24 +51,6 @@ impl MCTSNode {
         }
     }
 
-    pub fn get_q(&self) -> f64 {
-        let v = self.visits.borrow().load(Ordering::SeqCst);
-        let q = if v == 0 {
-            0.0
-        } else {
-            let vf = v as f64;
-            let w = self.total_value.borrow().clone() as f64;
-            w / vf
-        };
-        q
-    }
-
-    pub fn get_u(&self, c_puct: f64) -> f64 {
-        let vf = self.visits.borrow().load(Ordering::SeqCst) as f64;
-        let u = c_puct * self.prior_probs * vf.sqrt() / (1.0 + vf);
-        u
-    }
-
     pub fn get_puct_value(
         &self,
         c_puct: f64,
