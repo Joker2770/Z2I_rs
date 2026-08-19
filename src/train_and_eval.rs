@@ -222,8 +222,12 @@ async fn main() {
         _ = f_2.write_all(&cfg::DEFAULT_SIMULATION_NUM.to_string().as_bytes());
         println!("Next: Generate initial weight by python.");
     } else if args[1] == "generate" && args.len() == 3 {
-        println!("Generate {} -th batch.", args[2]);
         let start_batch_id: u16 = args[2].parse().expect("Parameter Error!!!");
+        println!(
+            "Generate {}-{} -th batch.",
+            start_batch_id,
+            start_batch_id + cfg::NUM_2_SELF_PLAY - 1
+        );
 
         if let Ok(content) = fs::read_to_string("current_and_best_weight.txt") {
             let mut iter = content.split_whitespace();
