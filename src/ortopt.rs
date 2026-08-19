@@ -43,9 +43,14 @@ impl NeuralNetwork {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
         ortcommon::init()?;
 
+        let intra_thread_num = if cfg::INTRA_THREAD_NUM > 1 {
+            cfg::INTRA_THREAD_NUM
+        } else {
+            2
+        };
         let session = Session::builder()?
             .with_optimization_level(session::builder::GraphOptimizationLevel::Level3)?
-            .with_intra_threads(cfg::INTRA_THREAD_NUM as usize)?
+            .with_intra_threads(intra_thread_num as usize)?
             .commit_from_file(model_path)?;
         let input_names: Vec<String> = session
             .inputs()
@@ -81,9 +86,7 @@ impl NeuralNetwork {
                 )
             })?;
 
-        let nn = NeuralNetwork {
-            request_sender,
-        };
+        let nn = NeuralNetwork { request_sender };
 
         Ok(nn)
     }
@@ -228,6 +231,7 @@ fn infer_batch(
             .map_err(|error| error.to_string())?
     };
 
+    // println!("batch_size: {}", batch_size);
     let outputs: SessionOutputs = session.run(inputs).map_err(|error| error.to_string())?;
     let v_arr = outputs[output_names[1].as_str()]
         .try_extract_array::<f32>()

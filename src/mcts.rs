@@ -90,10 +90,17 @@ impl MCTSNode {
         for c in self.children.borrow().iter() {
             let value = c.get_puct_value(c_puct, c_virtual_loss, sum_visits_from_parent);
             if value > best_value {
+                // println!(
+                //     "W: {}, v: {}, v_l: {}",
+                //     c.total_value.borrow(),
+                //     c.visits.borrow().load(Ordering::SeqCst),
+                //     c.virtual_loss.borrow().load(Ordering::SeqCst)
+                // );
                 best_value = value;
                 best_child = Some(Rc::clone(&c));
             }
         }
+        // println!();
         if let Some(b_c) = best_child {
             let old_vl = b_c.virtual_loss.borrow().load(Ordering::SeqCst);
             let new_vl = old_vl.saturating_add(1);
