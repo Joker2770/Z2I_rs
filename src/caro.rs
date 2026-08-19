@@ -162,3 +162,184 @@ impl RuleOpt for CaroJudge {
         CaroJudge::check_win(self, board, last_move)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const N: usize = 15;
+
+    fn idx(row: usize, col: usize) -> usize {
+        row * N + col
+    }
+
+    fn board_with(stones: &[(usize, Color)]) -> Board {
+        let mut board = vec![vec![Color::Blank; N]; N];
+        for &(i, c) in stones {
+            board[i / N][i % N] = c;
+        }
+        board
+    }
+
+    fn black_row(row: usize, cols: std::ops::RangeInclusive<usize>) -> Vec<(usize, Color)> {
+        cols.map(|c| (idx(row, c), Color::Black)).collect()
+    }
+
+    #[test]
+    fn win_horizontal_five_black_last_at_end() {
+        // x x x x x, last move is the rightmost stone
+        let row = 7;
+        let stones = black_row(row, 3..=7);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(row, 7) as i16));
+    }
+
+    #[test]
+    fn win_horizontal_five_black_last_at_other_end() {
+        // x x x x x, last move is the leftmost stone
+        let row = 7;
+        let stones = black_row(row, 3..=7);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(row, 3) as i16));
+    }
+
+    #[test]
+    fn win_horizontal_five_last_in_middle() {
+        // x x x x x, last move is the middle stone
+        let row = 7;
+        let stones = black_row(row, 3..=7);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(row, 5) as i16));
+    }
+
+    #[test]
+    fn win_vertical_five_white() {
+        // o o o o o in a column
+        let col = 7;
+        let stones: Vec<(usize, Color)> =
+            (3..=7).map(|r| (idx(r, col), Color::White)).collect();
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(7, col) as i16));
+    }
+
+    #[test]
+    fn win_main_diagonal_five_black() {
+        let stones: Vec<(usize, Color)> =
+            (0..5).map(|d| (idx(3 + d, 3 + d), Color::Black)).collect();
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(7, 7) as i16));
+    }
+
+    #[test]
+    fn win_anti_diagonal_five_black() {
+        let stones: Vec<(usize, Color)> =
+            (0..5).map(|d| (idx(3 + d, 11 - d), Color::Black)).collect();
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(7, 7) as i16));
+    }
+
+    #[test]
+    fn win_six_in_a_row() {
+        // overline still wins under caro rule
+        let row = 7;
+        let stones = black_row(row, 3..=8);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(row, 8) as i16));
+    }
+
+    #[test]
+    fn win_blocked_at_one_end() {
+        // o x x x x x, white blocks one end, five still wins
+        let row = 7;
+        let mut stones = black_row(row, 4..=8);
+        stones.push((idx(row, 3), Color::White));
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(row, 6) as i16));
+    }
+
+    #[test]
+    fn win_at_top_edge() {
+        // five along the top edge, border acts as '3'
+        let stones = black_row(0, 0..=4);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(0, 4) as i16));
+    }
+
+    #[test]
+    fn win_at_corner_diagonal() {
+        let stones: Vec<(usize, Color)> = (0..5).map(|d| (idx(d, d), Color::Black)).collect();
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(judge.check_win(&board, idx(4, 4) as i16));
+    }
+
+    #[test]
+    fn four_in_a_row_is_not_win() {
+        let row = 7;
+        let stones = black_row(row, 3..=6);
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(!judge.check_win(&board, idx(row, 6) as i16));
+    }
+
+    #[test]
+    fn broken_four_is_not_win() {
+        // x x x _ x, gap breaks the line
+        let row = 7;
+        let stones = vec![idx(row, 3), idx(row, 4), idx(row, 5), idx(row, 7)]
+            .into_iter()
+            .map(|i| (i, Color::Black))
+            .collect::<Vec<_>>();
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(!judge.check_win(&board, idx(row, 7) as i16));
+    }
+
+    #[test]
+    fn interrupted_line_is_not_win() {
+        // x x o x x, opponent stone splits the line
+        let row = 7;
+        let mut stones = vec![idx(row, 3), idx(row, 4), idx(row, 6), idx(row, 7)]
+            .into_iter()
+            .map(|i| (i, Color::Black))
+            .collect::<Vec<_>>();
+        stones.push((idx(row, 5), Color::White));
+        let board = board_with(&stones);
+        let judge = CaroJudge::new();
+        assert!(!judge.check_win(&board, idx(row, 7) as i16));
+    }
+
+    #[test]
+    fn negative_last_move_is_not_win() {
+        let board = board_with(&[]);
+        let judge = CaroJudge::new();
+        assert!(!judge.check_win(&board, -1));
+        assert!(!judge.check_win(&board, -2));
+    }
+
+    #[test]
+    fn blank_last_move_is_not_win() {
+        let board = board_with(&[]);
+        let judge = CaroJudge::new();
+        assert!(!judge.check_win(&board, 0));
+    }
+
+    #[test]
+    fn rule_opt_trait_check_win() {
+        // exercise the RuleOpt implementation explicitly
+        let row = 7;
+        let stones = black_row(row, 3..=7);
+        let board = board_with(&stones);
+        let mut judge = CaroJudge::new();
+        assert!(RuleOpt::check_win(&mut judge, &board, idx(row, 7) as i16));
+    }
+}
