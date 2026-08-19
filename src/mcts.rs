@@ -5,8 +5,8 @@ use futures::future;
 use std::cell::RefCell;
 use std::ops::Div;
 use std::rc::{Rc, Weak};
-use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 use tokio::task;
 
@@ -365,7 +365,14 @@ impl MCTS {
         let mut most_visits = 0usize;
         for c in children.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
-            if c_v >= most_visits {
+            if c_v > most_visits
+                || (c_v == most_visits
+                    && c.prior_probs
+                        > children
+                            .iter()
+                            .find(|candidate| candidate.action == best_action)
+                            .map_or(-1.0, |candidate| candidate.prior_probs))
+            {
                 most_visits = c_v;
                 best_action = c.action;
             }
@@ -471,6 +478,7 @@ impl MCTS {
             let mut action_priors = vec![0.0; self.action_size as usize];
             let legal_hash_tab = g.get_legal_moves();
 
+            let mut sum = 0.0;
             if let Some(nn) = &self.neural_network {
                 let rx = nn
                     .borrow()
@@ -482,7 +490,6 @@ impl MCTS {
                     .expect("inference failed");
                 action_priors = result.0;
                 value = result.1;
-                let mut sum = 0.0;
                 for i in 0..self.action_size {
                     if 1 == legal_hash_tab[i as usize] {
                         sum += action_priors[i as usize];
@@ -494,15 +501,19 @@ impl MCTS {
                 if sum > f64::EPSILON {
                     action_priors.iter_mut().for_each(|x| *x = x.div(sum));
                 } else {
-                    let sum: f64 = legal_hash_tab.iter().map(|&x| x as f64).sum();
-                    for i in 0..action_priors.len() {
-                        action_priors[i] = legal_hash_tab[i] as f64 / sum;
+                    sum = legal_hash_tab.iter().map(|&x| x as f64).sum();
+                    if sum > f64::EPSILON {
+                        for i in 0..action_priors.len() {
+                            action_priors[i] = legal_hash_tab[i] as f64 / sum;
+                        }
                     }
                 }
             } else {
-                let sum: f64 = legal_hash_tab.iter().map(|&x| x as f64).sum();
-                for i in 0..action_priors.len() {
-                    action_priors[i] = legal_hash_tab[i] as f64 / sum;
+                sum = legal_hash_tab.iter().map(|&x| x as f64).sum();
+                if sum > f64::EPSILON {
+                    for i in 0..action_priors.len() {
+                        action_priors[i] = legal_hash_tab[i] as f64 / sum;
+                    }
                 }
             }
 
