@@ -508,7 +508,13 @@ impl MCTS {
             }
             node.backpropagate(value);
         } else {
-            value = if color == Color::Blank { 0.0 } else { 1.0 };
+            value = if color == Color::Blank {
+                0.0
+            } else if color == *g.get_cur_color() {
+                1.0
+            } else {
+                -1.0
+            };
             let _tree_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
             node.backpropagate(value);
         }
