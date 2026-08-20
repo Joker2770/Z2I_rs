@@ -103,7 +103,7 @@ impl AppConfig {
                 }
             }
         }
-        eprintln!("INFO config.toml not found; using built-in defaults");
+        eprintln!("MESSAGE config.toml not found; using built-in defaults");
         Self::default()
     }
 
@@ -194,7 +194,7 @@ impl Brain {
                 true
             }
             Err(error) => {
-                eprintln!("INFO failed to load model {}: {error}", path.display());
+                eprintln!("MESSAGE failed to load model {}: {error}", path.display());
                 self.neural_network = None;
                 self.loaded_model_path = None;
                 false
