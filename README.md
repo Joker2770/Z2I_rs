@@ -59,7 +59,9 @@ caro_model = "models/caro_15x15_532.onnx"
 standard_caro_model = "models/standard_caro_15x15_533.onnx"
 
 [MCTS]
+# Number of MCTS simulations
 num_mct_sims = 500
+# Number of async tasks to simulations
 num_sim_per_batch = 8
 
 [ONNXRUNTIME]

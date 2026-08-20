@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Joker2770
 
+#![deny(deprecated)]
+
 mod caro;
 mod configuration;
 mod free_style;

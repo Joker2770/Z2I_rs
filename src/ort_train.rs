@@ -1,3 +1,6 @@
+
+#![deny(deprecated)]
+
 use ndarray::{Array2, Array4};
 use ort::{memory::Allocator, session::Session, training::Trainer, value::Tensor};
 use std::{
