@@ -60,6 +60,9 @@ standard_caro_model = "models/standard_caro_15x15_533.onnx"
 
 [MCTS]
 num_mct_sims = 500
+
+[ONNXRUNTIME]
+num_intra_thread = 4
 ```
 
 模型文件必须放在配置指定的位置。当前 `NeuralNetwork` 的输入张量固定为 `3x15x15`，仓库中的 ONNX 模型也按 15x15 棋盘导出；如需支持其他尺寸，需要同时修改模型输入、张量转换和棋盘配置。

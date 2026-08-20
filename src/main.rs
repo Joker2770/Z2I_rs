@@ -48,10 +48,17 @@ struct MctsConfig {
 }
 
 #[derive(Debug, Deserialize)]
+struct OnnxruntimeConfig {
+    num_intra_thread: u8,
+}
+
+#[derive(Debug, Deserialize)]
 struct AppConfig {
     model: ModelConfig,
     #[serde(rename = "MCTS")]
     mcts: MctsConfig,
+    #[serde(rename = "ONNXRUNTIME")]
+    onnx: OnnxruntimeConfig,
 }
 
 impl Default for AppConfig {
@@ -67,6 +74,9 @@ impl Default for AppConfig {
             },
             mcts: MctsConfig {
                 num_mct_sims: cfg::DEFAULT_SIMULATION_NUM,
+            },
+            onnx: OnnxruntimeConfig {
+                num_intra_thread: cfg::DEFAULT_INTRA_THREAD_NUM,
             },
         }
     }
@@ -116,6 +126,7 @@ struct Brain {
     ai_color: Color,
     rule: RuleFlag,
     simulation_num: usize,
+    intra_thread_num: u8,
     timeout_turn: Option<u64>,
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
@@ -132,6 +143,7 @@ impl Brain {
             rule: RuleFlag::FreeStyle,
             timeout_turn: None,
             simulation_num: config.mcts.num_mct_sims,
+            intra_thread_num: config.onnx.num_intra_thread,
             config,
             neural_network: None,
             loaded_model_path: None,
@@ -165,7 +177,11 @@ impl Brain {
             self.loaded_model_path = None;
             return false;
         }
-        match NeuralNetwork::new(&path, cfg::DEFAULT_BATCH_SIZE as usize) {
+        match NeuralNetwork::new(
+            &path,
+            cfg::DEFAULT_BATCH_SIZE as usize,
+            self.intra_thread_num,
+        ) {
             Ok(network) => {
                 self.neural_network = Some(Rc::new(RefCell::new(network)));
                 self.loaded_model_path = Some(path);

@@ -30,7 +30,11 @@ pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
 
         println!("Current training model path: {:?}", model_path);
 
-        let model = NeuralNetwork::new(&model_path, cfg::DEFAULT_BATCH_SIZE as usize);
+        let model = NeuralNetwork::new(
+            &model_path,
+            cfg::DEFAULT_BATCH_SIZE as usize,
+            cfg::DEFAULT_INTRA_THREAD_NUM,
+        );
         if let Ok(m) = model {
             let model_ref = Rc::new(RefCell::new(m));
             let sp = SelfPlay::new(model_ref);
@@ -187,7 +191,11 @@ pub async fn eval(
             let model_path = cur_path
                 .join("weights")
                 .join(weight_id.to_string() + ".onnx");
-            match NeuralNetwork::new(&model_path, cfg::MAX_BATCH_SIZE as usize) {
+            match NeuralNetwork::new(
+                &model_path,
+                cfg::MAX_BATCH_SIZE as usize,
+                cfg::DEFAULT_INTRA_THREAD_NUM,
+            ) {
                 Ok(model) => Some(model),
                 Err(error) => {
                     eprintln!("Load model {} error: {}", model_path.display(), error);

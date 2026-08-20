@@ -14,7 +14,7 @@ pub mod cfg {
     pub const MIN_BATCH_SIZE: u16 = 1;
     pub const EXPLORE_STEP: u16 = BOARD_SIZE as u16 * BOARD_SIZE as u16;
     pub const DIRI: f64 = 0.01;
-    pub const INTRA_THREAD_NUM: u8 = 4;
+    pub const DEFAULT_INTRA_THREAD_NUM: u8 = 4;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     // 0 - free-style
     // 1 - standard

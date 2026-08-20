@@ -39,18 +39,18 @@ pub struct NeuralNetwork {
 }
 
 impl NeuralNetwork {
-    pub fn new(model_path: &Path, batch_size: usize) -> Result<Self, Box<dyn error::Error>> {
+    pub fn new(model_path: &Path, batch_size: usize, intra_thread_num: u8) -> Result<Self, Box<dyn error::Error>> {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
         ortcommon::init()?;
 
-        let intra_thread_num = if cfg::INTRA_THREAD_NUM > 1 {
-            cfg::INTRA_THREAD_NUM
+        let intra_threads = if intra_thread_num > 1 {
+            intra_thread_num
         } else {
-            2
+            cfg::DEFAULT_INTRA_THREAD_NUM
         };
         let session = Session::builder()?
             .with_optimization_level(session::builder::GraphOptimizationLevel::Level3)?
-            .with_intra_threads(intra_thread_num as usize)?
+            .with_intra_threads(intra_threads as usize)?
             .commit_from_file(model_path)?;
         let input_names: Vec<String> = session
             .inputs()
