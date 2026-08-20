@@ -60,6 +60,7 @@ standard_caro_model = "models/standard_caro_15x15_533.onnx"
 
 [MCTS]
 num_mct_sims = 500
+num_sim_per_batch = 8
 
 [ONNXRUNTIME]
 num_intra_thread = 4

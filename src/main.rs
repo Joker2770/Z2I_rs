@@ -45,6 +45,7 @@ struct ModelConfig {
 #[derive(Debug, Deserialize)]
 struct MctsConfig {
     num_mct_sims: usize,
+    num_sim_per_batch: u8,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,6 +75,7 @@ impl Default for AppConfig {
             },
             mcts: MctsConfig {
                 num_mct_sims: cfg::DEFAULT_SIMULATION_NUM,
+                num_sim_per_batch: cfg::DEFAULT_SIM_PER_BATCH_NUM,
             },
             onnx: OnnxruntimeConfig {
                 num_intra_thread: cfg::DEFAULT_INTRA_THREAD_NUM,
@@ -126,6 +128,7 @@ struct Brain {
     ai_color: Color,
     rule: RuleFlag,
     simulation_num: usize,
+    sim_per_batch_num: u8,
     intra_thread_num: u8,
     timeout_turn: Option<u64>,
     config: AppConfig,
@@ -143,6 +146,7 @@ impl Brain {
             rule: RuleFlag::FreeStyle,
             timeout_turn: None,
             simulation_num: config.mcts.num_mct_sims,
+            sim_per_batch_num: config.mcts.num_sim_per_batch,
             intra_thread_num: config.onnx.num_intra_thread,
             config,
             neural_network: None,
@@ -202,6 +206,7 @@ impl Brain {
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS,
             AtomicUsize::new(self.simulation_num),
+            self.sim_per_batch_num,
             action_size,
         )
     }

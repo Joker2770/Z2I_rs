@@ -161,7 +161,7 @@ pub struct MCTS {
     action_size: u16,
     c_puct: f64,
     c_virtual_loss: f64,
-    sim_per_batch: u8,
+    sims_per_batch: u8,
     /// 串行化对搜索树的读写（select 下降 / expand / backpropagate），
     /// 避免多个并发仿真任务同时抢占 select。锁内不能包含 `.await`。
     tree_lock: Mutex<()>,
@@ -173,12 +173,13 @@ impl MCTS {
         c_puct: f64,
         c_virtual_loss: f64,
         simulation_num: AtomicUsize,
+        sim_per_batch_num: u8,
         action_size: u16,
     ) -> Self {
-        let sim_per_batch = if cfg::SIM_PER_BATCH > 0 && cfg::SIM_PER_BATCH < 255 {
-            cfg::SIM_PER_BATCH
+        let sims_per_batch = if sim_per_batch_num > 0 {
+            sim_per_batch_num
         } else {
-            1
+            cfg::DEFAULT_SIM_PER_BATCH_NUM
         };
 
         MCTS {
@@ -192,7 +193,7 @@ impl MCTS {
             action_size,
             c_puct,
             c_virtual_loss,
-            sim_per_batch,
+            sims_per_batch,
             tree_lock: Mutex::new(()),
         }
     }
@@ -373,8 +374,7 @@ impl MCTS {
         let sim_batch = self
             .simulation_num
             .load(Ordering::Relaxed)
-            .div(self.sim_per_batch as usize)
-            + 1;
+            .div(self.sims_per_batch as usize);
         let mut batches_done = 0usize;
         for _ in 0..sim_batch {
             if batches_done > 0 {
@@ -384,7 +384,7 @@ impl MCTS {
                     }
                 }
             }
-            let simulations = (0..self.sim_per_batch).map(|_| self.simulation(gomoku));
+            let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
             batches_done += 1;
         }
@@ -537,7 +537,7 @@ mod tests {
     #[tokio::test]
     async fn get_best_action_on_first_move_returns_a_legal_action() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1,game.get_action_size());
 
         let action = mcts.get_best_action(&game).await;
 
@@ -553,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn simulation_expands_and_backpropagates() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, game.get_action_size());
 
         mcts.simulation(&game).await;
 
@@ -583,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_returns_normalized_legal_probs() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(2), game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(2), 1, game.get_action_size());
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 
@@ -601,7 +601,7 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_falls_back_to_priors_after_one_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), game.get_action_size());
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, game.get_action_size());
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 
@@ -617,6 +617,7 @@ mod tests {
             1.0,
             3.0,
             AtomicUsize::new(2048),
+            cfg::DEFAULT_SIM_PER_BATCH_NUM,
             game.get_action_size(),
         );
 
@@ -627,7 +628,7 @@ mod tests {
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
-        assert_eq!(root_visits, cfg::SIM_PER_BATCH as usize);
+        assert_eq!(root_visits, cfg::DEFAULT_SIM_PER_BATCH_NUM as usize);
     }
 
     #[tokio::test]
@@ -639,6 +640,7 @@ mod tests {
             1.0,
             3.0,
             AtomicUsize::new(sims),
+            cfg::DEFAULT_SIM_PER_BATCH_NUM,
             game.get_action_size(),
         );
 
@@ -648,7 +650,7 @@ mod tests {
             .await;
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        let expected = (sims / cfg::SIM_PER_BATCH as usize + 1) * cfg::SIM_PER_BATCH as usize;
+        let expected = (sims / cfg::DEFAULT_SIM_PER_BATCH_NUM as usize) * cfg::DEFAULT_SIM_PER_BATCH_NUM as usize;
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
         assert_eq!(root_visits, expected);
     }

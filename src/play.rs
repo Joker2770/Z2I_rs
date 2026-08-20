@@ -38,6 +38,7 @@ impl SelfPlay {
                 cfg::C_PUCT as f64,
                 cfg::C_VIRTUAL_LOSS as f64,
                 AtomicUsize::new(cfg::DEFAULT_SIMULATION_NUM),
+                cfg::DEFAULT_SIM_PER_BATCH_NUM,
                 action_size,
             );
 

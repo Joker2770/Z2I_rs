@@ -72,6 +72,7 @@ pub async fn play_for_eval(
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
             AtomicUsize::new(num_mcts_sim_a as usize),
+            cfg::DEFAULT_SIM_PER_BATCH_NUM,
             g_ref.borrow().get_action_size(),
         );
         let mut mb = MCTS::new(
@@ -79,6 +80,7 @@ pub async fn play_for_eval(
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS as f64,
             AtomicUsize::new(num_mcts_sim_b as usize),
+            cfg::DEFAULT_SIM_PER_BATCH_NUM,
             g_ref.borrow().get_action_size(),
         );
 

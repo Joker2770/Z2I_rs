@@ -29,5 +29,5 @@ pub mod cfg {
     pub const RENDER_AT_EVAL: bool = true;
     pub const INFER_TASK_WAIT_US: u16 = 2;
     // suggest < 256, and >= 1
-    pub const SIM_PER_BATCH: u8 = 16;
+    pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
 }
