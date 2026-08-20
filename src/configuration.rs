@@ -6,7 +6,7 @@ pub mod cfg {
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const N_IN_ROW: u8 = 5;
     pub const C_PUCT: f32 = 2.5;
-    pub const C_VIRTUAL_LOSS: f64 = 3.0;
+    pub const C_VIRTUAL_LOSS: f64 = 1.0;
     pub const CHANNEL_SIZE: u8 = 3;
     pub const DEFAULT_BATCH_SIZE: u16 = 128;
     pub const DEFAULT_SIMULATION_NUM: usize = 2048;
