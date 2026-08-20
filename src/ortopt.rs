@@ -9,7 +9,7 @@ use crate::{
 };
 
 use ort::{
-    session::{self, Session, SessionOutputs},
+    session::{self, RunOptions, Session, SessionOutputs},
     value::TensorRef,
 };
 
@@ -25,6 +25,10 @@ use std::{
     thread,
     time::Duration,
 };
+use tokio::{
+    sync::mpsc as tokio_mpsc,
+    time::timeout,
+};
 
 pub(crate) type InferenceOutput = Result<(Vec<f64>, f64), String>;
 
@@ -35,7 +39,7 @@ struct InferenceTask {
 
 #[derive(Debug)]
 pub struct NeuralNetwork {
-    request_sender: Sender<InferenceTask>,
+    request_sender: tokio_mpsc::UnboundedSender<InferenceTask>,
 }
 
 impl NeuralNetwork {
@@ -73,17 +77,21 @@ impl NeuralNetwork {
 
         let batch_size = Arc::new(AtomicUsize::new(b_s));
         let worker_batch_size = Arc::clone(&batch_size);
-        let (request_sender, request_receiver) = mpsc::channel();
+        let (request_sender, request_receiver) = tokio_mpsc::unbounded_channel();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| error.to_string())?;
         thread::Builder::new()
             .name("onnx-inference".to_string())
             .spawn(move || {
-                inference_loop(
+                runtime.block_on(inference_loop(
                     session,
                     &input_names,
                     &output_names,
                     worker_batch_size,
                     request_receiver,
-                )
+                ));
             })?;
 
         let nn = NeuralNetwork { request_sender };
@@ -158,28 +166,30 @@ impl NeuralNetwork {
     }
 }
 
-fn inference_loop(
+async fn inference_loop(
     mut session: Session,
     input_node_names: &[String],
     output_names: &[String],
     batch_size: Arc<AtomicUsize>,
-    request_receiver: Receiver<InferenceTask>,
+    mut request_receiver: tokio_mpsc::UnboundedReceiver<InferenceTask>,
 ) {
     loop {
-        let first = match request_receiver.recv() {
-            Ok(task) => task,
-            Err(_) => return,
+        let first = match request_receiver.recv().await {
+            Some(task) => task,
+            None => return,
         };
         let mut tasks = vec![first];
 
         let max_batch_size = batch_size.load(Ordering::Relaxed);
         while tasks.len() < max_batch_size {
-            match request_receiver
-                .recv_timeout(Duration::from_micros(cfg::INFER_TASK_WAIT_US as u64))
+            match timeout(
+                Duration::from_micros(cfg::INFER_TASK_WAIT_US as u64),
+                request_receiver.recv(),
+            )
+            .await
             {
-                Ok(task) => tasks.push(task),
-                Err(mpsc::RecvTimeoutError::Timeout) => break,
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                Ok(Some(task)) => tasks.push(task),
+                _ => break,
             }
         }
 
@@ -187,13 +197,14 @@ fn inference_loop(
             .iter()
             .flat_map(|task| task.state.iter().copied())
             .collect();
-        let result = infer_batch(
+        let result = infer_batch_async(
             &mut session,
             &input_node_names,
             &output_names,
             states,
             tasks.len(),
-        );
+        )
+        .await;
         match result {
             Ok(outputs) => {
                 for (task, output) in tasks.into_iter().zip(outputs) {
@@ -209,7 +220,7 @@ fn inference_loop(
     }
 }
 
-fn infer_batch(
+async fn infer_batch_async(
     session: &mut Session,
     input_node_names: &[String],
     output_names: &[String],
@@ -232,7 +243,12 @@ fn infer_batch(
     };
 
     // println!("batch_size: {}", batch_size);
-    let outputs: SessionOutputs = session.run(inputs).map_err(|error| error.to_string())?;
+    let run_options = RunOptions::new().map_err(|error| error.to_string())?;
+    let outputs: SessionOutputs = session
+        .run_async(inputs, &run_options)
+        .map_err(|error| error.to_string())?
+        .await
+        .map_err(|error| error.to_string())?;
     let v_arr = outputs[output_names[1].as_str()]
         .try_extract_array::<f32>()
         .map_err(|error| error.to_string())?
