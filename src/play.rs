@@ -28,6 +28,15 @@ impl SelfPlay {
         const GAMMA_SHAPE: f64 = 0.3;
         const GAMMA_SCALE: f64 = 1.0;
 
+        let get_temp = |&step: &u16| -> f64 {
+            let t_min = cfg::GREEDY_TEMP;
+            let warmup = cfg::EXPLORE_STEP;
+            let decay = cfg::TEMP_DECAY;
+
+            (t_min as f64)
+                .max(1.0 * (-(0.0f64.max(step as f64 - warmup as f64)) / decay as f64).exp())
+        };
+
         let game = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW);
         if let Some(gg) = game {
             let game_ref = Rc::new(RefCell::new(gg));
@@ -48,7 +57,7 @@ impl SelfPlay {
             };
             println!("Game rule: {}", game_ref.borrow().get_rule().bits());
 
-            let mut step = 0;
+            let mut step = 0u16;
             let mut board_buffer =
                 vec![
                     vec![vec![0; cfg::BOARD_SIZE as usize]; cfg::BOARD_SIZE as usize];
@@ -67,11 +76,8 @@ impl SelfPlay {
 
             let mut hasher = Sha256::new();
             while game_status.0 == GameStage::Running {
-                let temp = if step < cfg::EXPLORE_STEP {
-                    cfg::EXPLORE_TEMP
-                } else {
-                    cfg::GREEDY_TEMP
-                };
+                let temp = get_temp(&step);
+                println!("temp: {}", temp);
                 let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
                 println!("Step: {}", step);
                 let board = game_ref.borrow().get_board().clone();
