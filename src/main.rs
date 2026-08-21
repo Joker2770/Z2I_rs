@@ -26,13 +26,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::{
-    configuration::cfg,
-    gomoku::Gomoku,
-    mcts::MCTS,
-    ortopt::NeuralNetwork,
-    rule::{Color, RuleFlag},
-};
+use configuration::cfg;
+use gomoku::Gomoku;
+use mcts::MCTS;
+use ortopt::NeuralNetwork;
+use rule::{Color, RuleFlag};
 
 #[derive(Debug, Deserialize)]
 struct ModelConfig {

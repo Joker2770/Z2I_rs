@@ -15,13 +15,14 @@ mod renju;
 mod rule;
 mod standard;
 
-use gomoku::Gomoku;
+use configuration::cfg;
+use gomoku::{GameStage, Gomoku};
 use mcts::MCTS;
-use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
+use ortopt::NeuralNetwork;
+use play::SelfPlay;
+use rule::Color;
 
-use crate::{
-    configuration::cfg, gomoku::GameStage, ortopt::NeuralNetwork, play::SelfPlay, rule::Color,
-};
+use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
 
 pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
     if let Ok(cur_path) = env::current_dir() {
