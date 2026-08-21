@@ -16,6 +16,7 @@ use ort::{
 use ndarray::Array;
 use std::{
     error,
+    ops::Div,
     path::Path,
     sync::{
         Arc,
@@ -25,10 +26,7 @@ use std::{
     thread,
     time::Duration,
 };
-use tokio::{
-    sync::mpsc as tokio_mpsc,
-    time::timeout,
-};
+use tokio::{sync::mpsc as tokio_mpsc, time::timeout};
 
 pub(crate) type InferenceOutput = Result<(Vec<f64>, f64), String>;
 
@@ -43,7 +41,11 @@ pub struct NeuralNetwork {
 }
 
 impl NeuralNetwork {
-    pub fn new(model_path: &Path, batch_size: usize, intra_thread_num: u8) -> Result<Self, Box<dyn error::Error>> {
+    pub fn new(
+        model_path: &Path,
+        batch_size: usize,
+        intra_thread_num: u8,
+    ) -> Result<Self, Box<dyn error::Error>> {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
         ortcommon::init()?;
 
@@ -273,13 +275,29 @@ async fn infer_batch_async(
 
     let mut results = Vec::with_capacity(batch_size);
     for (index, value) in v_vec.iter().enumerate().take(batch_size) {
-        let probabilities = p_vec
+        let probabilities: Vec<f64> = p_vec
             .iter()
             .skip(index * action_size)
             .take(action_size)
-            .map(|value| (**value as f64).exp())
+            .map(|value| {
+                let v = **value as f64;
+                if v.is_nan() { 0.0 } else { v }
+            })
             .collect();
-        results.push((probabilities, **value as f64));
+        let max_val = probabilities
+            .iter()
+            .fold(f64::NEG_INFINITY, |acc, &x| acc.max(x));
+        let mut exps: Vec<f64> = probabilities.iter().map(|&v| (v - max_val).exp()).collect();
+        let sum: f64 = exps.iter().sum();
+        if sum.is_finite() && sum > f64::EPSILON {
+            exps.iter_mut().for_each(|x| *x = x.div(sum));
+        } else {
+            exps.fill(1.0 / action_size as f64);
+        }
+
+        let value = **value as f64;
+        let value = if value.is_nan() { 0.0 } else { value };
+        results.push((exps, value));
     }
     Ok(results)
 }

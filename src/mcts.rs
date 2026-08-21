@@ -91,7 +91,8 @@ impl MCTSNode {
             let value = c.get_puct_value(c_puct, c_virtual_loss, sum_visits_from_parent);
             if value > best_value {
                 // println!(
-                //     "W: {}, v: {}, v_l: {}",
+                //     "v: {}, W: {}, v: {}, v_l: {}",
+                //     value,
                 //     c.total_value.borrow(),
                 //     c.visits.borrow().load(Ordering::SeqCst),
                 //     c.virtual_loss.borrow().load(Ordering::SeqCst)
