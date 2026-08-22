@@ -284,12 +284,25 @@ impl MCTS {
         }
         // explore
         else {
-            let mut sum = 0.0;
+            // 将访问次数转化为策略概率：π(a) ∝ N(a)^(1/τ)。
+            // 为避免数值溢出，先在对数域计算 log π(a) = (1/τ) * ln(N(a))，
+            // 再减去最大对数值（max_log_prob）后取 exp，即 softmax 的数值稳定写法。
+            let inv_temp = (1.0).div(temp);
+            let mut log_probs = vec![f64::NEG_INFINITY; priors_size];
+            let mut max_log_prob = f64::NEG_INFINITY;
             for c in children.iter() {
                 let c_v = c.visits.borrow().load(Ordering::SeqCst);
                 if c_v > 0 {
-                    let idx = c.action as usize;
-                    action_probs[idx] = (c_v as f64).powf((1.0).div(temp));
+                    let log_prob = inv_temp * (c_v as f64).ln();
+                    log_probs[c.action as usize] = log_prob;
+                    max_log_prob = max_log_prob.max(log_prob);
+                }
+            }
+
+            let mut sum = 0.0;
+            for (idx, log_prob) in log_probs.iter().enumerate() {
+                if log_prob.is_finite() {
+                    action_probs[idx] = (log_prob - max_log_prob).exp();
                     sum += action_probs[idx];
                 }
             }
