@@ -122,11 +122,7 @@ impl CheckResult {
         }
 
         if RuleFlag::FreeStyle != flag {
-            if *rule_flag & flag == flag {
-                is_win = true;
-            } else {
-                is_win = false;
-            }
+            is_win = *rule_flag & flag == flag;
         }
 
         if is_win {
@@ -137,10 +133,10 @@ impl CheckResult {
 
             self.chk_rst = (GameStage::End, board[row as usize][col as usize]);
         } else if rule_flag.contains(RuleFlag::Renju) {
-            if let Some(mut r) = self.rule_grp.renju_obj {
-                if !(r.is_legal(board, last_move)) {
-                    self.chk_rst = (GameStage::End, Color::White);
-                }
+            if let Some(mut r) = self.rule_grp.renju_obj
+                && !(r.is_legal(board, last_move))
+            {
+                self.chk_rst = (GameStage::End, Color::White);
             }
         } else {
             self.chk_rst = (GameStage::Running, Color::Blank);
@@ -182,8 +178,8 @@ impl Gomoku {
                 cur_color: Color::Black,
                 last_move: -1,
                 board: vec![vec![Color::Blank; b_s as usize]; b_s as usize],
-                n_in_row: n_in_row,
-                rule_flag: rule_flag,
+                n_in_row,
+                rule_flag,
                 sum_cur_actions: 0,
                 legal_moves_hash_tab: vec![1; (b_s * b_s) as usize],
                 check_result: CheckResult::new(),
@@ -225,10 +221,8 @@ impl Gomoku {
     pub fn is_illegal(&self, x: u8, y: u8) -> bool {
         if x > (self.board_size - 1) || y > (self.board_size - 1) {
             true
-        } else if self.board[x as usize][y as usize] != Color::Blank {
-            true
         } else {
-            false
+            self.board[x as usize][y as usize] != Color::Blank
         }
     }
 
@@ -283,7 +277,7 @@ impl Gomoku {
             } else {
                 self.board[i as usize][j as usize] = self.cur_color;
                 self.legal_moves_hash_tab[move_idx as usize] = 0;
-                self.sum_cur_actions = self.sum_cur_actions + 1;
+                self.sum_cur_actions += 1;
                 self.last_move = move_idx as i16;
                 self.cur_color = if Color::White == self.cur_color {
                     Color::Black

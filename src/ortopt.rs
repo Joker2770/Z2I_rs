@@ -201,8 +201,8 @@ async fn inference_loop(
             .collect();
         let result = infer_batch_async(
             &mut session,
-            &input_node_names,
-            &output_names,
+            input_node_names,
+            output_names,
             states,
             tasks.len(),
         )

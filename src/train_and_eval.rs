@@ -73,7 +73,7 @@ pub async fn play_for_eval(
         let mut ma = MCTS::new(
             nn_a,
             cfg::C_PUCT as f64,
-            cfg::C_VIRTUAL_LOSS as f64,
+            cfg::C_VIRTUAL_LOSS,
             AtomicUsize::new(num_mcts_sim_a as usize),
             cfg::DEFAULT_SIM_PER_BATCH_NUM,
             g_ref.borrow().get_action_size(),
@@ -81,7 +81,7 @@ pub async fn play_for_eval(
         let mut mb = MCTS::new(
             nn_b,
             cfg::C_PUCT as f64,
-            cfg::C_VIRTUAL_LOSS as f64,
+            cfg::C_VIRTUAL_LOSS,
             AtomicUsize::new(num_mcts_sim_b as usize),
             cfg::DEFAULT_SIM_PER_BATCH_NUM,
             g_ref.borrow().get_action_size(),
@@ -109,27 +109,27 @@ pub async fn play_for_eval(
             if do_render {
                 println!("step: {}", step);
                 g_ref.borrow().render();
-                println!("");
+                println!();
             }
             game_state = {
                 let mut game = g_ref.borrow_mut();
                 *game.get_game_status()
             };
 
-            step = step + 1;
+            step += 1;
         }
         println!("eval: total step num = {}", step);
 
         if (game_state.1 == Color::Black && a_first) || (game_state.1 == Color::White && !a_first) {
             println!("winner = a");
-            a_win = a_win + 1;
+            a_win += 1;
         } else if (game_state.1 == Color::Black && !a_first)
             || (game_state.1 == Color::White && a_first)
         {
             println!("winner = b");
-            b_win = b_win + 1;
+            b_win += 1;
         } else {
-            draw = draw + 1
+            draw += 1
         }
     }
 
@@ -232,7 +232,7 @@ async fn main() {
         _ = f_1.write_all("0 0".as_bytes());
 
         let mut f_2 = fs::File::create("random_mcts_number.txt").expect("Unable to create file");
-        _ = f_2.write_all(&cfg::DEFAULT_SIMULATION_NUM.to_string().as_bytes());
+        _ = f_2.write_all(cfg::DEFAULT_SIMULATION_NUM.to_string().as_bytes());
         println!("Next: Generate initial weight by python.");
     } else if args[1] == "generate" && args.len() == 3 {
         let start_batch_id: u16 = args[2].parse().expect("Parameter Error!!!");

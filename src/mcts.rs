@@ -44,11 +44,7 @@ impl MCTSNode {
     }
 
     pub fn is_leaf(&self) -> bool {
-        if self.children.borrow().is_empty() {
-            true
-        } else {
-            false
-        }
+        self.children.borrow().is_empty()
     }
 
     pub fn get_puct_value(
@@ -60,21 +56,18 @@ impl MCTSNode {
         let virtual_loss =
             c_virtual_loss * self.virtual_loss.borrow().load(Ordering::SeqCst) as f64;
         let v = self.visits.borrow().load(Ordering::SeqCst);
-        let get_q = |v: usize, v_l: f64| {
-            let q = if v == 0 {
+        let get_q = |v: usize, v_l: f64| -> f64 {
+            if v == 0 {
                 0.0
             } else {
                 let vf = v as f64;
-                let w = *self.total_value.borrow() as f64;
+                let w = *self.total_value.borrow();
                 (w - v_l) / vf
-            };
-            q
+            }
         };
-        let get_u = |v: usize, c_puct: f64| {
+        let get_u = |v: usize, c_puct: f64| -> f64 {
             let vf = v as f64;
-            let u =
-                c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / (1.0 + vf);
-            u
+            c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / (1.0 + vf)
         };
 
         let q = get_q(v, virtual_loss);
@@ -98,7 +91,7 @@ impl MCTSNode {
                 //     c.virtual_loss.borrow().load(Ordering::SeqCst)
                 // );
                 best_value = value;
-                best_child = Some(Rc::clone(&c));
+                best_child = Some(Rc::clone(c));
             }
         }
         // println!();
@@ -271,7 +264,7 @@ impl MCTS {
             let mut best_action = u16::MAX;
             let mut most_visits = 0;
             for c in children.iter() {
-                let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
+                let c_v = c.visits.borrow().load(Ordering::SeqCst);
                 if c_v > most_visits
                     || (c_v == most_visits
                         && c.prior_probs
@@ -293,11 +286,11 @@ impl MCTS {
         else {
             let mut sum = 0.0;
             for c in children.iter() {
-                let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
+                let c_v = c.visits.borrow().load(Ordering::SeqCst);
                 if c_v > 0 {
                     let idx = c.action as usize;
                     action_probs[idx] = (c_v as f64).powf((1.0).div(temp));
-                    sum = sum + action_probs[idx];
+                    sum += action_probs[idx];
                 }
             }
             // println!("Sum of action_probs before normalization: {}", sum);
@@ -316,13 +309,13 @@ impl MCTS {
         action_probs
     }
 
-    pub fn get_best_action_from_probs(&self, probs: &Vec<f64>) -> u16 {
+    pub fn get_best_action_from_probs(&self, probs: &[f64]) -> u16 {
         let mut best_action = u16::MAX;
         let mut best_probs = -1.0;
 
-        for i in 0..probs.len() {
-            if probs[i] > best_probs {
-                best_probs = probs[i];
+        for (i, item) in probs.iter().enumerate() {
+            if *item > best_probs {
+                best_probs = *item;
                 best_action = i as u16;
             }
         }
@@ -355,7 +348,7 @@ impl MCTS {
         let mut best_action = u16::MAX;
         let mut most_visits = 0usize;
         for c in children.iter() {
-            let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
+            let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v > most_visits
                 || (c_v == most_visits
                     && c.prior_probs
@@ -376,18 +369,15 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        let mut batches_done = 0usize;
-        for _ in 0..sim_batch {
-            if batches_done > 0 {
-                if let Some(deadline) = deadline {
-                    if Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline {
-                        break;
-                    }
-                }
+        for (batches_done, _) in (0..sim_batch).enumerate() {
+            if batches_done > 0
+                && let Some(deadline) = deadline
+                && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
+            {
+                break;
             }
             let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
             future::join_all(simulations).await;
-            batches_done += 1;
         }
     }
 
@@ -407,7 +397,7 @@ impl MCTS {
         let mut best_action = u16::MAX;
         let mut most_visits = 0usize;
         for c in children.iter() {
-            let c_v = c.visits.borrow().load(Ordering::SeqCst) as usize;
+            let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v >= most_visits {
                 most_visits = c_v;
                 best_action = c.action;
@@ -416,14 +406,14 @@ impl MCTS {
         best_action
     }
 
-    pub fn get_action_by_sample(&self, probs: &Vec<f64>) -> u16 {
+    pub fn get_action_by_sample(&self, probs: &[f64]) -> u16 {
         let r = rand::random();
         let mut idx = 0;
         let mut accum = 0.0;
         for i in 0..self.action_size {
             accum += probs[i as usize];
             if accum > r {
-                idx = i as u16;
+                idx = i;
                 break;
             }
         }
@@ -538,7 +528,14 @@ mod tests {
     #[tokio::test]
     async fn get_best_action_on_first_move_returns_a_legal_action() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1,game.get_action_size());
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(1),
+            1,
+            game.get_action_size(),
+        );
 
         let action = mcts.get_best_action(&game).await;
 
@@ -554,7 +551,14 @@ mod tests {
     #[tokio::test]
     async fn simulation_expands_and_backpropagates() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, game.get_action_size());
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(1),
+            1,
+            game.get_action_size(),
+        );
 
         mcts.simulation(&game).await;
 
@@ -584,7 +588,14 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_returns_normalized_legal_probs() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(2), 1, game.get_action_size());
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(2),
+            1,
+            game.get_action_size(),
+        );
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 
@@ -602,7 +613,14 @@ mod tests {
     #[tokio::test]
     async fn get_action_probs_falls_back_to_priors_after_one_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
-        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, game.get_action_size());
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(1),
+            1,
+            game.get_action_size(),
+        );
 
         let probs = mcts.get_action_probs(&game, 1.0).await;
 
@@ -651,7 +669,8 @@ mod tests {
             .await;
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        let expected = (sims / cfg::DEFAULT_SIM_PER_BATCH_NUM as usize) * cfg::DEFAULT_SIM_PER_BATCH_NUM as usize;
+        let expected = (sims / cfg::DEFAULT_SIM_PER_BATCH_NUM as usize)
+            * cfg::DEFAULT_SIM_PER_BATCH_NUM as usize;
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
         assert_eq!(root_visits, expected);
     }

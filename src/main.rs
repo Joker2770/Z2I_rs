@@ -268,22 +268,23 @@ impl Brain {
         if !game.execute_move(action) {
             return None;
         }
-        self.mcts.as_mut()?.update_root_with_action(&game, action);
+        self.mcts.as_mut()?.update_root_with_action(game, action);
         Some(action)
     }
 
     fn play_opponent_move(&mut self, action: u16) -> bool {
-        let is_succeed = self
+        let mut is_succeed = self
             .game
             .as_mut()
             .is_some_and(|game| game.execute_move(action));
-        if is_succeed {
-            if let Some(g) = self.game.as_ref()
-                && let Some(m) = self.mcts.as_mut()
-            {
-                m.update_root_with_action(&g, action);
-            }
-        };
+        if is_succeed
+            && let Some(g) = self.game.as_ref()
+            && let Some(m) = self.mcts.as_mut()
+        {
+            m.update_root_with_action(g, action);
+        } else {
+            is_succeed = false;
+        }
         is_succeed
     }
 
@@ -406,18 +407,14 @@ async fn run_protocol() {
                 } else {
                     println!("ERROR invalid board");
                 }
-            } else if let Some((coords, color)) = command.rsplit_once(',') {
-                if let (Some((x, y)), Ok(color)) =
+            } else if let Some((coords, color)) = command.rsplit_once(',')
+                && let (Some((x, y)), Ok(color)) =
                     (parse_coordinates(coords), color.trim().parse::<u8>())
-                {
-                    if let Some(game) = brain.game.as_ref() {
-                        if let Some(action) = action_from_coordinates(board_size(game), x, y) {
-                            if (1..=3).contains(&color) {
-                                stones.push((action, color));
-                            }
-                        }
-                    }
-                }
+                && let Some(game) = brain.game.as_ref()
+                && let Some(action) = action_from_coordinates(board_size(game), x, y)
+                && (1..=3).contains(&color)
+            {
+                stones.push((action, color));
             }
             continue;
         }

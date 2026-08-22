@@ -47,11 +47,7 @@ impl FreeStyleJudge {
 
     pub fn check_win(&self, board: &Board, last_move: i16) -> bool {
         if last_move < 0 {
-            if last_move == -1 {
-                return true;
-            } else {
-                return false;
-            }
+            return last_move == -1;
         }
         let n = board.len();
         if n == 0 {

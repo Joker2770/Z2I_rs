@@ -33,8 +33,7 @@ impl SelfPlay {
             let warmup = cfg::EXPLORE_STEP;
             let decay = cfg::TEMP_DECAY;
 
-            (t_min as f64)
-                .max(1.0 * (-(0.0f64.max(step as f64 - warmup as f64)) / decay as f64).exp())
+            t_min.max(1.0 * (-(0.0f64.max(step as f64 - warmup as f64)) / decay as f64).exp())
         };
 
         let game = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW);
@@ -45,7 +44,7 @@ impl SelfPlay {
             let mut mcts = MCTS::new(
                 nn,
                 cfg::C_PUCT as f64,
-                cfg::C_VIRTUAL_LOSS as f64,
+                cfg::C_VIRTUAL_LOSS,
                 AtomicUsize::new(cfg::DEFAULT_SIMULATION_NUM),
                 cfg::DEFAULT_SIM_PER_BATCH_NUM,
                 action_size,
@@ -85,7 +84,7 @@ impl SelfPlay {
                     p_buffer[step as usize][i] = *p;
                 }
                 for i in 0..board.len() {
-                    for j in 0..board[i as usize].len() {
+                    for j in 0..board[i].len() {
                         board_buffer[step as usize][i][j] = if board[i][j] == Color::Black {
                             1
                         } else if board[i][j] == Color::White {
@@ -111,8 +110,8 @@ impl SelfPlay {
                 for (i, legal) in lm.iter().enumerate().take(action_probs.len()) {
                     if *legal == 1u8 {
                         let noise = cfg::DIRI * gamma.sample(&mut rng);
-                        action_probs[i] = action_probs[i] + noise;
-                        sum = sum + action_probs[i]
+                        action_probs[i] += noise;
+                        sum += action_probs[i]
                     }
                 }
 
@@ -130,11 +129,11 @@ impl SelfPlay {
                     *game.get_game_status()
                 };
                 game_ref.borrow().render();
-                println!("");
+                println!();
                 step = step.saturating_add(1);
             }
 
-            let win_col_2_i8 = if game_status.1 == Color::Black {
+            let win_col_2_i = if game_status.1 == Color::Black {
                 1
             } else if game_status.1 == Color::White {
                 -1
@@ -143,7 +142,7 @@ impl SelfPlay {
             };
             println!(
                 "Self play: total step num = {} winner = {}",
-                step, win_col_2_i8
+                step, win_col_2_i
             );
             hasher.update(game_ref.borrow().get_last_move().to_ne_bytes());
             hasher.update(game_ref.borrow().get_legal_moves());
@@ -182,7 +181,7 @@ impl SelfPlay {
             }
 
             for i in 0..step {
-                let new_v = color_buffer[i as usize] as i32 * win_col_2_i8 as i32;
+                let new_v = color_buffer[i as usize] as i32 * win_col_2_i;
                 v_buffer[i as usize] = new_v;
                 _ = file.write_all(&v_buffer[i as usize].to_ne_bytes());
             }

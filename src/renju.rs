@@ -442,11 +442,7 @@ impl RenjuJudge {
 
     pub fn check_win(&mut self, board: &Board, last_move: i16) -> bool {
         if last_move < 0 {
-            if last_move == -1 {
-                return true;
-            } else {
-                return false;
-            }
+            return last_move == -1;
         }
         let n = board.len();
         if n == 0 {
@@ -499,11 +495,7 @@ impl RenjuJudge {
 
     pub fn is_legal(&mut self, board: &Board, last_move: i16) -> bool {
         if last_move < 0 {
-            if last_move == -1 {
-                return true;
-            } else {
-                return false;
-            }
+            return last_move == -1;
         }
         let n = board.len();
         if n == 0 {
