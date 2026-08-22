@@ -9,11 +9,11 @@ pub mod cfg {
     pub const C_VIRTUAL_LOSS: f64 = 1.0;
     pub const CHANNEL_SIZE: u8 = 3;
     pub const DEFAULT_BATCH_SIZE: u16 = 128;
-    pub const DEFAULT_SIMULATION_NUM: usize = 2048;
+    pub const DEFAULT_SIMULATION_NUM: usize = 512;
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
     pub const EXPLORE_STEP: u16 = 15;
-    pub const DIRI: f64 = 0.01;
+    pub const DIRI: f64 = 0.005;
     pub const DEFAULT_INTRA_THREAD_NUM: u8 = 16;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     // 0 - free-style
