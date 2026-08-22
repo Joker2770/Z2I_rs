@@ -206,3 +206,37 @@ impl SelfPlay {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+
+    use rand::RngExt;
+    use rand_distr::{Distribution, Gamma};
+
+    #[test]
+    fn gamma_sample_shape_0_3_scale_1_0() {
+        const GAMMA_SHAPE: f64 = 0.3;
+        const GAMMA_SCALE: f64 = 1.0;
+
+        let gamma = Gamma::new(GAMMA_SHAPE, GAMMA_SCALE).unwrap();
+        let mut rng = rand::rng();
+
+        let n_samples = 10_000usize;
+        let mut sum = 0.0;
+        for _ in 0..n_samples {
+            let sample = gamma.sample(&mut rng);
+            assert!(sample.is_finite(), "gamma sample must be finite");
+            assert!(sample >= 0.0, "gamma sample must be non-negative");
+            sum += sample;
+        }
+
+        let mean = sum / n_samples as f64;
+        let expected = GAMMA_SHAPE * GAMMA_SCALE;
+        assert!(
+            (mean - expected).abs() < 0.05,
+            "sample mean {} should be close to expected {}",
+            mean,
+            expected
+        );
+    }
+}

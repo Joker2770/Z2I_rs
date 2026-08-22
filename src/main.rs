@@ -176,7 +176,7 @@ impl Brain {
     fn load_neural_network(&mut self) -> bool {
         let path = self.resolve_model_path();
         if !path.exists() {
-            eprintln!("ERROR model not found: {}", path.display());
+            eprintln!("MESSAGE model not found: {}", path.display());
             self.neural_network = None;
             self.loaded_model_path = None;
             return false;

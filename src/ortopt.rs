@@ -251,6 +251,8 @@ async fn infer_batch_async(
         .map_err(|error| error.to_string())?
         .await
         .map_err(|error| error.to_string())?;
+    assert_eq!(output_names[0].as_str(), "P");
+    assert_eq!(output_names[1].as_str(), "V");
     let v_arr = outputs[output_names[1].as_str()]
         .try_extract_array::<f32>()
         .map_err(|error| error.to_string())?
@@ -281,7 +283,12 @@ async fn infer_batch_async(
             .take(action_size)
             .map(|value| {
                 let v = **value as f64;
-                if v.is_nan() { 0.0 } else { v }
+                if v.is_nan() {
+                    eprintln!("Found NaN p!!!");
+                    0.0
+                } else {
+                    v
+                }
             })
             .collect();
         let max_val = probabilities
@@ -292,11 +299,17 @@ async fn infer_batch_async(
         if sum.is_finite() && sum > f64::EPSILON {
             exps.iter_mut().for_each(|x| *x = x.div(sum));
         } else {
+            eprintln!("Sum overflow!!!");
             exps.fill(1.0 / action_size as f64);
         }
 
         let value = **value as f64;
-        let value = if value.is_nan() { 0.0 } else { value };
+        let value = if value.is_nan() {
+            eprintln!("Found NaN v!!!");
+            0.0
+        } else {
+            value
+        };
         results.push((exps, value));
     }
     Ok(results)
