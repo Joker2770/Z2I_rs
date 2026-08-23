@@ -8,10 +8,31 @@ default = []
 training = ["ort/training"]
 cuda = ["ort/cuda", "ort/load-dynamic"]
 openvino = ["ort/openvino", "ort/load-dynamic"]
+tensorrt = ["ort/tensorrt", "ort/load-dynamic"]
+onednn = ["ort/onednn"]
+directml = ["ort/directml"]
+nnapi = ["ort/nnapi"]
+coreml = ["ort/coreml"]
+xnnpack = ["ort/xnnpack"]
+rocm = ["ort/rocm"]
+acl = ["ort/acl"]
+armnn = ["ort/armnn"]
+tvm = ["ort/tvm"]
+migraphx = ["ort/migraphx"]
+rknpu = ["ort/rknpu"]
+vitis = ["ort/vitis"]
+cann = ["ort/cann"]
+qnn = ["ort/qnn"]
+webgpu = ["ort/webgpu"]
+azure = ["ort/azure"]
+
+backend-candle = ["ort/alternative-backend"]
+backend-tract = ["ort/alternative-backend"]
+
 
 [dependencies]
 bitflags = "2.13.1"
-futures = "0.3"
+futures = "0.3.34"
 hex = "0.4.3"
 ndarray = "0.17.2"
 ort = "2.0.0-rc.13"
@@ -19,7 +40,13 @@ rand = "0.10.2"
 rand_distr = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.0"
-tokio = { version = "1.53.1", features = ["rt", "rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.53.1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "sync",
+    "time",
+] }
 toml = "1.1.4"
 
 [[bin]]

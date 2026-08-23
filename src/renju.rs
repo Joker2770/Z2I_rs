@@ -235,23 +235,15 @@ impl RenjuJudge {
 
     fn is_double_three(&self, board: &Board, last_move: i16) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
-        let mut i_up_4 = 0i32;
-        let mut i_left_4 = 0i32;
-        let mut i_leftup_4 = 0i32;
-        let mut i_leftdown_4 = 0i32;
-        let mut i_up_3 = 0i32;
-        let mut i_left_3 = 0i32;
-        let mut i_leftup_3 = 0i32;
-        let mut i_leftdown_3 = 0i32;
 
-        i_up_4 = Self::count_a4(board, last_move, dirs[0]);
-        i_left_4 = Self::count_a4(board, last_move, dirs[1]);
-        i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
-        i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
-        i_up_3 = Self::count_a3(board, last_move, dirs[0]);
-        i_left_3 = Self::count_a3(board, last_move, dirs[1]);
-        i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
-        i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
+        let i_up_4 = Self::count_a4(board, last_move, dirs[0]);
+        let i_left_4 = Self::count_a4(board, last_move, dirs[1]);
+        let i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
+        let i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
+        let i_up_3 = Self::count_a3(board, last_move, dirs[0]);
+        let i_left_3 = Self::count_a3(board, last_move, dirs[1]);
+        let i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
+        let i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
 
         let sum4 = i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4;
         let sum3 = i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3;
