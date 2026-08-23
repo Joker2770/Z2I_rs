@@ -31,4 +31,8 @@ pub mod cfg {
     pub const INFER_TASK_WAIT_US: u16 = 2;
     // suggest < 256, and >= 1
     pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
+    // open_mind 思考过程输出：相邻两次输出的间隔（毫秒）
+    pub const OPEN_MIND_REPORT_INTERVAL_MS: u64 = 500;
+    // open_mind 思考过程输出中保留的子节点数量上限（按访问次数过滤）
+    pub const OPEN_MIND_THINKING_MAX_CHILDREN: usize = 10;
 }

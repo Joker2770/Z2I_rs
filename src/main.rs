@@ -19,13 +19,12 @@ use serde::Deserialize;
 use std::{
     cell::RefCell,
     env,
-    io::{self, Write},
+    io::{self, BufRead, Write},
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::AtomicUsize,
     time::{Duration, Instant},
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
 
 use configuration::cfg;
 use gomoku::{GameStage, Gomoku};
@@ -135,6 +134,7 @@ struct Brain {
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
     loaded_model_path: Option<PathBuf>,
+    open_mind: bool,
 }
 
 impl Brain {
@@ -152,6 +152,7 @@ impl Brain {
             config,
             neural_network: None,
             loaded_model_path: None,
+            open_mind: false,
         }
     }
 
@@ -263,7 +264,19 @@ impl Brain {
     async fn play_move(&mut self) -> Option<u16> {
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
-        mcts.simulation_within(game, self.think_deadline()).await;
+        let deadline = self.think_deadline();
+        if self.open_mind {
+            let size = board_size(game);
+            mcts.simulation_within_reporting(
+                game,
+                deadline,
+                Duration::from_millis(cfg::OPEN_MIND_REPORT_INTERVAL_MS),
+                move |mcts: &MCTS| mcts.print_thinking(size),
+            )
+            .await;
+        } else {
+            mcts.simulation_within(game, deadline).await;
+        }
         let action = mcts.get_best_action_after_simulation(game);
         let game = self.game.as_mut()?;
         if !game.execute_move(action) {
@@ -301,6 +314,13 @@ impl Brain {
             return;
         }
         mcts.simulation_batch(game).await;
+    }
+
+    /// 是否处于可后台思考的状态：已创建对局且对局仍在进行中。
+    fn should_ponder(&mut self) -> bool {
+        self.game
+            .as_mut()
+            .is_some_and(|game| game.get_game_status().0 == GameStage::Running)
     }
 
     async fn begin(&mut self) -> Option<u16> {
@@ -397,26 +417,59 @@ fn output_move(action: u16, size: u8) {
 }
 
 async fn run_protocol() {
-    let stdin = tokio::io::stdin();
-    let mut lines = BufReader::new(stdin).lines();
     let mut brain = Brain::new();
     let mut board_lines: Option<Vec<(u16, u8)>> = None;
 
+    // 用独立 OS 线程持续读取 manager 命令并经通道转发，主循环在等待
+    // 命令期间可以持续推进后台思考。注意不能用 tokio::spawn 读 tokio
+    // stdin：程序退出时 runtime 会等待阻塞在读操作上的读行任务，导致
+    // 收到 END 后进程无法立即结束；std 线程会随进程退出被直接终止。
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            match line {
+                Ok(line) => {
+                    if line_tx.send(line).is_err() {
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+    });
+
     loop {
         // 等待下一行命令；对局进行中（非 BOARD 收集模式）时，把等待对方
-        // 行棋的时间也利用起来，在后台持续执行 MCTS 仿真（逐批推进）。
+        // 行棋的时间也利用起来，在后台持续执行 MCTS 仿真（逐批推进），
+        // 直到收到命令。收到命令时最多只需等当前批次自然完成（毫秒级），
+        // 不会中途取消仿真导致 virtual_loss 残留。
         let line = if board_lines.is_none() {
-            tokio::join!(lines.next_line(), brain.ponder_batch()).0
+            loop {
+                match line_rx.try_recv() {
+                    Ok(line) => break Some(line),
+                    Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                        if brain.should_ponder() {
+                            brain.ponder_batch().await;
+                        } else {
+                            break line_rx.recv().await;
+                        }
+                    }
+                    Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => break None,
+                }
+            }
         } else {
-            lines.next_line().await
+            line_rx.recv().await
         };
-        let Ok(Some(line)) = line else { break };
+        let Some(line) = line else { break };
         let command = line.trim();
         if command.is_empty() {
             continue;
         }
 
         if let Some(stones) = board_lines.as_mut() {
+            if command.eq_ignore_ascii_case("END") {
+                break;
+            }
             if command.eq_ignore_ascii_case("DONE") {
                 let pending = std::mem::take(stones);
                 board_lines = None;
@@ -496,6 +549,13 @@ async fn run_protocol() {
                             fields.next().and_then(|value| value.parse::<u64>().ok())
                         {
                             brain.timeout_turn = Some(value);
+                        }
+                    }
+                    Some("open_mind") => {
+                        if let Some(value) =
+                            fields.next().and_then(|value| value.parse::<u8>().ok())
+                        {
+                            brain.open_mind = value != 0;
                         }
                     }
                     _ => {}
@@ -662,6 +722,18 @@ mod tests {
         brain.ponder_batch().await;
 
         let action = brain.begin().await.expect("BEGIN should return a move");
+        assert!(action < 225);
+        assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
+    }
+
+    #[tokio::test]
+    async fn play_move_with_open_mind_returns_a_move() {
+        let mut brain = test_brain();
+        brain.open_mind = true;
+        assert!(brain.start(15));
+
+        let action = brain.play_move().await.expect("move expected");
+
         assert!(action < 225);
         assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
     }

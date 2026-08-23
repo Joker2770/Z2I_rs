@@ -401,6 +401,35 @@ impl MCTS {
         }
     }
 
+    /// 在 `simulation_within` 的基础上，每隔 `report_interval` 调用一次 `report`，
+    /// 用于把根节点的搜索进展定期输出给 manager（open_mind 调试输出）。
+    pub async fn simulation_within_reporting(
+        &self,
+        gomoku: &Gomoku,
+        deadline: Option<Instant>,
+        report_interval: Duration,
+        mut report: impl FnMut(&Self),
+    ) {
+        let sim_batch = self
+            .simulation_num
+            .load(Ordering::Relaxed)
+            .div(self.sims_per_batch as usize);
+        let mut next_report = Instant::now() + report_interval;
+        for batches_done in 0..sim_batch {
+            if batches_done > 0
+                && let Some(deadline) = deadline
+                && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
+            {
+                break;
+            }
+            self.simulation_batch(gomoku).await;
+            if Instant::now() >= next_report {
+                report(self);
+                next_report = Instant::now() + report_interval;
+            }
+        }
+    }
+
     pub fn get_best_action_after_simulation(&self, gomoku: &Gomoku) -> u16 {
         let root = self.root.borrow();
         let children = root.children.borrow();
@@ -424,6 +453,40 @@ impl MCTS {
             }
         }
         best_action
+    }
+
+    /// 输出根节点第一层子节点的动作坐标与访问次数：
+    /// `DEBUG thinking x1,y1,visits1 x2,y2,visits2 ...`
+    /// 子节点过多时，过滤访问次数较少的子节点。
+    pub fn print_thinking(&self, board_size: u8) {
+        let root = self.root.borrow();
+        let children = root.children.borrow();
+        if children.is_empty() {
+            return;
+        }
+
+        let mut entries: Vec<(u16, usize)> = children
+            .iter()
+            .map(|child| (child.action, child.visits.borrow().load(Ordering::SeqCst)))
+            .filter(|(_, visits)| *visits > 0)
+            .collect();
+        if entries.is_empty() {
+            return;
+        }
+
+        // 子节点过多时，只保留访问次数最多的若干个
+        if entries.len() > cfg::OPEN_MIND_THINKING_MAX_CHILDREN {
+            entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+            entries.truncate(cfg::OPEN_MIND_THINKING_MAX_CHILDREN);
+        }
+
+        let size = board_size as u16;
+        let message = entries
+            .iter()
+            .map(|(action, visits)| format!("{},{},{}", action % size, action / size, visits))
+            .collect::<Vec<_>>()
+            .join(" ");
+        println!("DEBUG thinking {message}");
     }
 
     pub fn get_action_by_sample(&self, probs: &[f64]) -> u16 {
@@ -693,6 +756,29 @@ mod tests {
             * cfg::DEFAULT_SIM_PER_BATCH_NUM as usize;
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
         assert_eq!(root_visits, expected);
+    }
+
+    #[tokio::test]
+    async fn simulation_within_reporting_calls_reporter_at_intervals() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let sims_per_batch = 1u8;
+        let sims = 16usize;
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(sims),
+            sims_per_batch,
+            game.get_action_size(),
+        );
+
+        let reports = std::cell::Cell::new(0usize);
+        mcts.simulation_within_reporting(&game, None, Duration::ZERO, |_| {
+            reports.set(reports.get() + 1);
+        })
+        .await;
+
+        assert_eq!(reports.get(), sims);
     }
 
     #[test]
