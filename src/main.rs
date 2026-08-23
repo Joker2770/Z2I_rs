@@ -19,15 +19,16 @@ use serde::Deserialize;
 use std::{
     cell::RefCell,
     env,
-    io::{self, BufRead, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::AtomicUsize,
     time::{Duration, Instant},
 };
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 use configuration::cfg;
-use gomoku::Gomoku;
+use gomoku::{GameStage, Gomoku};
 use mcts::MCTS;
 use ortopt::NeuralNetwork;
 use rule::{Color, RuleFlag};
@@ -288,6 +289,20 @@ impl Brain {
         is_succeed
     }
 
+    /// 后台思考：在等待对方行棋期间执行一批 MCTS 仿真。
+    /// - 对局未开始或已经结束：立即返回，不空耗 CPU；
+    /// - 否则并发执行 `sims_per_batch` 个仿真。批次边界是搜索树的一致点，
+    ///   因此收到对方着法时最多只需等当前批次完成（毫秒级）。
+    async fn ponder_batch(&mut self) {
+        let (Some(game), Some(mcts)) = (self.game.as_mut(), self.mcts.as_ref()) else {
+            return;
+        };
+        if game.get_game_status().0 != GameStage::Running {
+            return;
+        }
+        mcts.simulation_batch(game).await;
+    }
+
     async fn begin(&mut self) -> Option<u16> {
         if self.game.as_ref()?.get_cur_color() != &self.ai_color {
             return None;
@@ -382,12 +397,20 @@ fn output_move(action: u16, size: u8) {
 }
 
 async fn run_protocol() {
-    let stdin = io::stdin();
+    let stdin = tokio::io::stdin();
+    let mut lines = BufReader::new(stdin).lines();
     let mut brain = Brain::new();
     let mut board_lines: Option<Vec<(u16, u8)>> = None;
 
-    for line in stdin.lock().lines() {
-        let Ok(line) = line else { break };
+    loop {
+        // 等待下一行命令；对局进行中（非 BOARD 收集模式）时，把等待对方
+        // 行棋的时间也利用起来，在后台持续执行 MCTS 仿真（逐批推进）。
+        let line = if board_lines.is_none() {
+            tokio::join!(lines.next_line(), brain.ponder_batch()).0
+        } else {
+            lines.next_line().await
+        };
+        let Ok(Some(line)) = line else { break };
         let command = line.trim();
         if command.is_empty() {
             continue;
@@ -627,6 +650,19 @@ mod tests {
 
         assert!(action < 225);
         assert_eq!(brain.game.as_ref().unwrap().get_cur_color(), &Color::White);
+        assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
+    }
+
+    #[tokio::test]
+    async fn ponder_batch_runs_simulations_before_begin() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        // 模拟等待对方行棋期间的后台思考
+        brain.ponder_batch().await;
+
+        let action = brain.begin().await.expect("BEGIN should return a move");
+        assert!(action < 225);
         assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
     }
 

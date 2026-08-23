@@ -377,20 +377,27 @@ impl MCTS {
         best_action
     }
 
+    /// 执行一批并发仿真（`sims_per_batch` 个）。
+    /// 批次边界是搜索树状态的一致点：批内仿真引发的 virtual_loss 均已回退，
+    /// 因此适合在批次边界让出控制权（例如把对手的思考时间用于后台思考）。
+    pub async fn simulation_batch(&self, gomoku: &Gomoku) {
+        let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
+        future::join_all(simulations).await;
+    }
+
     pub async fn simulation_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) {
         let sim_batch = self
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        for (batches_done, _) in (0..sim_batch).enumerate() {
+        for batches_done in 0..sim_batch {
             if batches_done > 0
                 && let Some(deadline) = deadline
                 && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
             {
                 break;
             }
-            let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
-            future::join_all(simulations).await;
+            self.simulation_batch(gomoku).await;
         }
     }
 
