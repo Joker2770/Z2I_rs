@@ -99,7 +99,7 @@ impl AppConfig {
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 match toml::from_str(&contents) {
                     Ok(config) => return config,
-                    Err(error) => eprintln!("failed to parse {}: {error}", path.display()),
+                    Err(error) => eprintln!("MESSAGE failed to parse {}: {error}", path.display()),
                 }
             }
         }
@@ -480,10 +480,10 @@ async fn run_protocol() {
                         let size = board_size(brain.game.as_ref().unwrap());
                         output_move(action, size);
                     } else {
-                        println!("ERROR cannot play board position");
+                        eprintln!("ERROR cannot play board position");
                     }
                 } else {
-                    println!("ERROR invalid board");
+                    eprintln!("ERROR invalid board");
                 }
             } else if let Some((coords, color)) = command.rsplit_once(',')
                 && let (Some((x, y)), Ok(color)) =
@@ -505,14 +505,14 @@ async fn run_protocol() {
                 if size.is_some_and(|size| brain.start(size)) {
                     println!("OK");
                 } else {
-                    println!("ERROR unsupported board size");
+                    eprintln!("ERROR unsupported board size");
                 }
             }
             "BEGIN" => {
                 if let Some(action) = brain.begin().await {
                     output_move(action, board_size(brain.game.as_ref().unwrap()));
                 } else {
-                    println!("ERROR cannot begin");
+                    eprintln!("ERROR cannot begin");
                 }
             }
             "TURN" => {
@@ -529,10 +529,10 @@ async fn run_protocol() {
                     if let Some(response) = brain.turn(action).await {
                         output_move(response, board_size(brain.game.as_ref().unwrap()));
                     } else {
-                        println!("ERROR no response");
+                        eprintln!("ERROR no response");
                     }
                 } else {
-                    println!("ERROR invalid turn");
+                    eprintln!("ERROR invalid turn");
                 }
             }
             "BOARD" => board_lines = Some(Vec::new()),
