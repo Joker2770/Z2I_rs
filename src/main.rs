@@ -47,6 +47,7 @@ struct MctsConfig {
     num_mct_sims: usize,
     num_sim_per_batch: u8,
     open_mind: bool,
+    enable_ponder: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -78,6 +79,7 @@ impl Default for AppConfig {
                 num_mct_sims: cfg::DEFAULT_SIMULATION_NUM,
                 num_sim_per_batch: cfg::DEFAULT_SIM_PER_BATCH_NUM,
                 open_mind: false,
+                enable_ponder: true,
             },
             onnx: OnnxruntimeConfig {
                 num_intra_thread: cfg::DEFAULT_INTRA_THREAD_NUM,
@@ -137,6 +139,7 @@ struct Brain {
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
     loaded_model_path: Option<PathBuf>,
     open_mind: bool,
+    enable_ponder: bool,
 }
 
 impl Brain {
@@ -152,6 +155,7 @@ impl Brain {
             sim_per_batch_num: config.mcts.num_sim_per_batch,
             intra_thread_num: config.onnx.num_intra_thread,
             open_mind: config.mcts.open_mind,
+            enable_ponder: config.mcts.enable_ponder,
             config,
             neural_network: None,
             loaded_model_path: None,
@@ -320,9 +324,11 @@ impl Brain {
 
     /// 是否处于可后台思考的状态：已创建对局且对局仍在进行中。
     fn should_ponder(&mut self) -> bool {
-        self.game
-            .as_mut()
-            .is_some_and(|game| game.get_game_status().0 == GameStage::Running)
+        self.enable_ponder
+            && self
+                .game
+                .as_mut()
+                .is_some_and(|game| game.get_game_status().0 == GameStage::Running)
     }
 
     async fn begin(&mut self) -> Option<u16> {

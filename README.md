@@ -63,6 +63,10 @@ standard_caro_model = "models/standard_caro_15x15_533.onnx"
 num_mct_sims = 500
 # Number of async tasks to simulations
 num_sim_per_batch = 8
+# Output information of action searching at thinking
+open_mind = true
+# Enable background pondering while waiting for the opponent (default: true)
+enable_ponder = true
 
 [ONNXRUNTIME]
 num_intra_thread = 4
