@@ -46,6 +46,7 @@ struct ModelConfig {
 struct MctsConfig {
     num_mct_sims: usize,
     num_sim_per_batch: u8,
+    open_mind: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,6 +77,7 @@ impl Default for AppConfig {
             mcts: MctsConfig {
                 num_mct_sims: cfg::DEFAULT_SIMULATION_NUM,
                 num_sim_per_batch: cfg::DEFAULT_SIM_PER_BATCH_NUM,
+                open_mind: false,
             },
             onnx: OnnxruntimeConfig {
                 num_intra_thread: cfg::DEFAULT_INTRA_THREAD_NUM,
@@ -149,10 +151,10 @@ impl Brain {
             simulation_num: config.mcts.num_mct_sims,
             sim_per_batch_num: config.mcts.num_sim_per_batch,
             intra_thread_num: config.onnx.num_intra_thread,
+            open_mind: config.mcts.open_mind,
             config,
             neural_network: None,
             loaded_model_path: None,
-            open_mind: false,
         }
     }
 
@@ -549,13 +551,6 @@ async fn run_protocol() {
                             fields.next().and_then(|value| value.parse::<u64>().ok())
                         {
                             brain.timeout_turn = Some(value);
-                        }
-                    }
-                    Some("open_mind") => {
-                        if let Some(value) =
-                            fields.next().and_then(|value| value.parse::<u8>().ok())
-                        {
-                            brain.open_mind = value != 0;
                         }
                     }
                     _ => {}
