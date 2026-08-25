@@ -22,6 +22,8 @@ NUM_CONTEST="${NUM_CONTEST:-20}"
 BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
+# 每 CHECK_FREQ 轮做一次验收评估(1=每轮评估);中间轮跳过评估、直接接纳候选
+CHECK_FREQ="${CHECK_FREQ:-1}"
 # 每轮生成 NUM_2_SELF_PLAY 局(src/configuration.rs),批次 id 步进与之保持一致
 STEP="${STEP:-100}"
 
@@ -36,5 +38,12 @@ for ((iter=1; iter<=MAX_ITERS; iter++)); do
     (cd ../train && "$PYTHON" learner.py train)
 
     echo "===== iter $iter: eval vs best ($NUM_CONTEST games) ====="
-    "$BIN" eval_with_winner "$NUM_CONTEST"
+    if (( iter % CHECK_FREQ == 0 )); then
+        "$BIN" eval_with_winner "$NUM_CONTEST"
+    else
+        echo "skip eval (CHECK_FREQ=$CHECK_FREQ): accept candidate directly"
+        if read -r CUR _ < current_and_best_weight.txt; then
+            printf '%s %s\n' "$CUR" "$CUR" > current_and_best_weight.txt
+        fi
+    fi
 done

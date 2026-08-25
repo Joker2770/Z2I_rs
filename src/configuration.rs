@@ -27,6 +27,11 @@ pub mod cfg {
     // 胜率超过 UPDATE_THRESHOLD 则候选成为新 best(AlphaZero 论文为 55%)
     pub const UPDATE_THRESHOLD: f64 = 0.55;
     pub const DRAW_SCORE: f64 = 0.5;
+    // 模拟次数随权重代际增长(自对弈与验收评估共用,双方同 sims 保证公平):
+    // sims = min(DEFAULT_SIMULATION_NUM + (weight_id / SIMS_BOOST_EVERY) * SIMS_BOOST_STEP, SIMS_CAP)
+    pub const SIMS_BOOST_EVERY: u16 = 20;
+    pub const SIMS_BOOST_STEP: usize = 128;
+    pub const SIMS_CAP: usize = 1600;
     // 0 - free-style
     // 1 - standard
     // 4 - renju

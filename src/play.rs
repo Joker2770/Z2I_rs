@@ -23,7 +23,7 @@ impl SelfPlay {
         Self { neural_network: nn }
     }
 
-    pub async fn play(&self, save_id: u16) {
+    pub async fn play(&self, save_id: u16, simulation_num: usize) {
         const BUFFER_LEN: u16 = cfg::BOARD_SIZE as u16 * cfg::BOARD_SIZE as u16 + 1;
 
         let get_temp = |&step: &u16| -> f64 {
@@ -43,7 +43,7 @@ impl SelfPlay {
                 nn,
                 cfg::C_PUCT as f64,
                 cfg::C_VIRTUAL_LOSS,
-                AtomicUsize::new(cfg::DEFAULT_SIMULATION_NUM),
+                AtomicUsize::new(simulation_num),
                 cfg::DEFAULT_SIM_PER_BATCH_NUM,
                 action_size,
             );
@@ -201,9 +201,14 @@ impl SelfPlay {
         }
     }
 
-    pub async fn self_play_for_train(&self, game_num: u16, start_batch_id: u16) {
+    pub async fn self_play_for_train(
+        &self,
+        game_num: u16,
+        start_batch_id: u16,
+        simulation_num: usize,
+    ) {
         for i in 0..game_num {
-            self.play(start_batch_id + i).await;
+            self.play(start_batch_id + i, simulation_num).await;
         }
     }
 }

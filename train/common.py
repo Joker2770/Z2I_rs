@@ -13,6 +13,8 @@ config = {
     # neural_network
     'train_use_gpu': True,                     # train neural network using cuda
     'lr': 0.001,                                # learning rate
+    'lr_milestones': [200, 400, 800],           # lr 阶梯衰减触发代际
+    'lr_gamma': 0.5,                            # lr 每次衰减系数
     'l2': 0.0001,                               # L2
     'num_channels': 256,                        # convolution neural network channel size
     'num_layers' : 4,                           # residual layer number

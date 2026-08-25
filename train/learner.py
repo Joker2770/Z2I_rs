@@ -58,6 +58,14 @@ class Learner():
         print(f"loading {model_id}-th model")
         self.nnet.load_model(model_path)
 
+        # 学习率按模型代际阶梯衰减
+        lr = config['lr']
+        for milestone in config['lr_milestones']:
+            if model_id >= milestone:
+                lr *= config['lr_gamma']
+        self.nnet.set_learning_rate(lr)
+        print(f"learning rate: {lr}")
+
         # model_id = 0
         # if model_dir==None:
         #     print("debug mode: best_model_dir = join('..','build','weights', str(model_id))")
