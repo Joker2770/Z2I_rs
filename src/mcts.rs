@@ -490,17 +490,34 @@ impl MCTS {
     }
 
     pub fn get_action_by_sample(&self, probs: &[f64]) -> u16 {
-        let r = rand::random();
-        let mut idx = 0;
+        let total: f64 = probs.iter().take(self.action_size as usize).sum();
+        if total <= f64::EPSILON {
+            // 概率全为 0(不应发生):退化为取第一个非零概率的动作
+            return probs
+                .iter()
+                .take(self.action_size as usize)
+                .position(|p| *p > 0.0)
+                .map(|i| i as u16)
+                .unwrap_or(0);
+        }
+        // 按总和归一后采样,避免浮点误差导致累积和永不越过 r
+        let r: f64 = rand::random();
         let mut accum = 0.0;
-        for i in 0..self.action_size {
-            accum += probs[i as usize];
+        for (i, p) in probs.iter().take(self.action_size as usize).enumerate() {
+            accum += p / total;
             if accum > r {
-                idx = i;
-                break;
+                return i as u16;
             }
         }
-        idx
+        // 浮点误差边界:r 极接近 1 时返回最后一个非零概率的动作
+        probs
+            .iter()
+            .take(self.action_size as usize)
+            .enumerate()
+            .rev()
+            .find(|(_, p)| **p > 0.0)
+            .map(|(i, _)| i as u16)
+            .unwrap_or(0)
     }
 
     pub async fn simulation(&self, gomoku: &Gomoku) {
@@ -709,6 +726,33 @@ mod tests {
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
         assert!(probs.iter().all(|probability| *probability >= 0.0));
+    }
+
+    #[test]
+    fn get_action_by_sample_respects_probs_and_handles_zero_total() {
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, 4);
+
+        // 单点分布:必然返回唯一非零项
+        assert_eq!(mcts.get_action_by_sample(&[0.0, 1.0, 0.0, 0.0]), 1);
+        assert_eq!(mcts.get_action_by_sample(&[0.0, 0.0, 0.0, 1.0]), 3);
+
+        // 全零分布:退化为返回 0
+        assert_eq!(mcts.get_action_by_sample(&[0.0, 0.0, 0.0, 0.0]), 0);
+
+        // 概率和不恰好为 1(浮点误差):仍只返回非零概率的动作
+        let probs = [0.3, 0.3, 0.3999999, 0.0];
+        for _ in 0..1000 {
+            let action = mcts.get_action_by_sample(&probs);
+            assert!(action < 3 && probs[action as usize] > 0.0);
+        }
+
+        // 均匀分布:多次采样应覆盖全部非零项
+        let mut seen = [false; 4];
+        for _ in 0..1000 {
+            let action = mcts.get_action_by_sample(&[0.25, 0.25, 0.25, 0.25]);
+            seen[action as usize] = true;
+        }
+        assert!(seen.iter().all(|s| *s));
     }
 
     #[tokio::test]

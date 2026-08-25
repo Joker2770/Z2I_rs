@@ -172,7 +172,7 @@ impl Gomoku {
         } else {
             RuleFlag::FreeStyle
         };
-        if b_s > n_in_row && n_in_row >= 3 && b_s <= cfg::MAX_BOARD_SIZE {
+        if b_s > n_in_row && n_in_row >= cfg::MIN_BOARD_SIZE && b_s <= cfg::MAX_BOARD_SIZE {
             let g = Gomoku {
                 board_size: b_s,
                 cur_color: Color::Black,

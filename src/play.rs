@@ -2,9 +2,9 @@
 // Copyright (c) 2026 Joker2770
 
 use rand::{self, RngExt};
-use rand_distr::{Distribution, Gamma};
+use rand_distr::{multi::Dirichlet, Distribution};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, env, fs, io::Write, ops::Div, rc::Rc, sync::atomic::AtomicUsize};
+use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
 
 use crate::{
     configuration::cfg,
@@ -25,8 +25,6 @@ impl SelfPlay {
 
     pub async fn play(&self, save_id: u16) {
         const BUFFER_LEN: u16 = cfg::BOARD_SIZE as u16 * cfg::BOARD_SIZE as u16 + 1;
-        const GAMMA_SHAPE: f64 = 0.3;
-        const GAMMA_SCALE: f64 = 1.0;
 
         let get_temp = |&step: &u16| -> f64 {
             let t_min = cfg::GREEDY_TEMP;
@@ -70,7 +68,6 @@ impl SelfPlay {
             let mut color_buffer = vec![0i8; BUFFER_LEN as usize];
             let mut last_move_buffer = vec![0; BUFFER_LEN as usize];
 
-            let gamma = Gamma::new(GAMMA_SHAPE, GAMMA_SCALE).unwrap();
             let mut rng = rand::rng();
 
             let mut hasher = Sha256::new();
@@ -106,20 +103,28 @@ impl SelfPlay {
 
                 let lm = game_ref.borrow().get_legal_moves().to_vec();
                 hasher.update(&lm);
-                let mut sum = 0.0;
-                for (i, legal) in lm.iter().enumerate().take(action_probs.len()) {
-                    if *legal == 1u8 {
-                        let noise = cfg::DIRI * gamma.sample(&mut rng);
-                        action_probs[i] += noise;
-                        sum += action_probs[i]
+                // AlphaZero 探索噪声:在合法着法上叠加 Dirichlet 噪声
+                // η ~ Dir(α),π = (1 - ε)·p + ε·η(ε = cfg::DIRI,α = cfg::DIRICHLET_ALPHA)
+                let legal_count = lm
+                    .iter()
+                    .take(action_probs.len())
+                    .filter(|legal| **legal == 1u8)
+                    .count();
+                if legal_count >= 2 {
+                    let dirichlet =
+                        Dirichlet::new(&vec![cfg::DIRICHLET_ALPHA; legal_count]).unwrap();
+                    let noise = dirichlet.sample(&mut rng);
+                    let mut noise_idx = 0usize;
+                    for (i, legal) in lm.iter().enumerate().take(action_probs.len()) {
+                        if *legal == 1u8 {
+                            action_probs[i] = (1.0 - cfg::DIRI) * action_probs[i]
+                                + cfg::DIRI * noise[noise_idx];
+                            noise_idx += 1;
+                        }
                     }
                 }
 
-                if sum > f64::EPSILON {
-                    action_probs.iter_mut().for_each(|x| *x = x.div(sum));
-                }
-
-                let rst = mcts.get_best_action_from_probs(&action_probs);
+                let rst = mcts.get_action_by_sample(&action_probs);
                 mcts.update_root_with_action(&game_ref.borrow(), rst);
                 if !game_ref.borrow_mut().execute_move(rst) {
                     break;
@@ -195,11 +200,6 @@ impl SelfPlay {
     }
 
     pub async fn self_play_for_train(&self, game_num: u16, start_batch_id: u16) {
-        // if self.neural_network.borrow().get_batch_size() < cfg::DEFAULT_BATCH_SIZE as usize {
-        //     self.neural_network
-        //         .borrow_mut()
-        //         .set_batch_size(game_num as usize * cfg::DEFAULT_BATCH_SIZE as usize);
-        // }
         for i in 0..game_num {
             self.play(start_batch_id + i).await;
         }
@@ -209,33 +209,38 @@ impl SelfPlay {
 #[cfg(test)]
 mod tests {
 
-    use rand::RngExt;
-    use rand_distr::{Distribution, Gamma};
+    use rand_distr::{multi::Dirichlet, Distribution};
 
     #[test]
-    fn gamma_sample_shape_0_3_scale_1_0() {
-        const GAMMA_SHAPE: f64 = 0.3;
-        const GAMMA_SCALE: f64 = 1.0;
+    fn dirichlet_sample_alpha_0_3() {
+        const ALPHA: f64 = 0.3;
+        const N: usize = 10;
 
-        let gamma = Gamma::new(GAMMA_SHAPE, GAMMA_SCALE).unwrap();
+        let dirichlet = Dirichlet::new(&[ALPHA; N]).unwrap();
         let mut rng = rand::rng();
 
         let n_samples = 10_000usize;
-        let mut sum = 0.0;
+        let mut sums = vec![0.0; N];
         for _ in 0..n_samples {
-            let sample = gamma.sample(&mut rng);
-            assert!(sample.is_finite(), "gamma sample must be finite");
-            assert!(sample >= 0.0, "gamma sample must be non-negative");
-            sum += sample;
+            let sample = dirichlet.sample(&mut rng);
+            let mut s = 0.0;
+            for (idx, x) in sample.iter().enumerate() {
+                assert!(x.is_finite(), "dirichlet sample must be finite");
+                assert!(*x >= 0.0, "dirichlet sample must be non-negative");
+                sums[idx] += *x;
+                s += *x;
+            }
+            assert!((s - 1.0).abs() < 1e-9, "dirichlet sample must sum to 1");
         }
 
-        let mean = sum / n_samples as f64;
-        let expected = GAMMA_SHAPE * GAMMA_SCALE;
-        assert!(
-            (mean - expected).abs() < 0.05,
-            "sample mean {} should be close to expected {}",
-            mean,
-            expected
-        );
+        let expected = 1.0 / N as f64;
+        for mean in sums.iter().map(|s| s / n_samples as f64) {
+            assert!(
+                (mean - expected).abs() < 0.01,
+                "component mean {} should be close to expected {}",
+                mean,
+                expected
+            );
+        }
     }
 }

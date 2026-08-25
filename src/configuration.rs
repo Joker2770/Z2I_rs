@@ -4,6 +4,7 @@
 pub mod cfg {
     pub const BOARD_SIZE: u8 = 15;
     pub const MAX_BOARD_SIZE: u8 = 25;
+    pub const MIN_BOARD_SIZE: u8 = 3;
     pub const N_IN_ROW: u8 = 5;
     pub const C_PUCT: f32 = 2.5;
     pub const C_VIRTUAL_LOSS: f64 = 1.0;
@@ -13,7 +14,11 @@ pub mod cfg {
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
     pub const EXPLORE_STEP: u16 = 15;
-    pub const DIRI: f64 = 0.005;
+    // AlphaZero 探索噪声:π = (1 - DIRI)·p + DIRI·η,η ~ Dir(DIRICHLET_ALPHA)
+    // DIRI 为 Dirichlet 噪声混合系数 ε(AlphaZero 论文取 0.25)
+    pub const DIRI: f64 = 0.25;
+    // Dirichlet 分布集中度参数 α(AlphaZero 论文取 0.3)
+    pub const DIRICHLET_ALPHA: f64 = 0.3;
     pub const DEFAULT_INTRA_THREAD_NUM: u8 = 16;
     pub const NUM_2_SELF_PLAY: u16 = 10;
     // 0 - free-style
