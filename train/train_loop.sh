@@ -23,7 +23,7 @@ BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
 # 每轮生成 NUM_2_SELF_PLAY 局(src/configuration.rs),批次 id 步进与之保持一致
-STEP=10
+STEP="${STEP:-100}"
 
 cd "$WORK_DIR"
 

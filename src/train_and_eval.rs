@@ -33,18 +33,46 @@ pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
 
         println!("Current training model path: {:?}", model_path);
 
-        let model = NeuralNetwork::new(
-            &model_path,
-            cfg::DEFAULT_BATCH_SIZE as usize,
-            cfg::DEFAULT_INTRA_THREAD_NUM,
-        );
-        if let Ok(m) = model {
-            let model_ref = Rc::new(RefCell::new(m));
-            let sp = SelfPlay::new(model_ref);
-            sp.self_play_for_train(cfg::NUM_2_SELF_PLAY, start_batch_id)
-                .await;
-        } else {
-            eprintln!("Load model error!!!");
+        let thread_num = cfg::NUM_2_SELF_PLAY_THREADS as usize;
+        let total_games = cfg::NUM_2_SELF_PLAY as usize;
+        let base = total_games / thread_num;
+        let remain = total_games % thread_num;
+        // 并行实例的 intra-op 线程数按实例数下调,避免总线程数成倍膨胀
+        let intra_thread_num =
+            ((cfg::DEFAULT_INTRA_THREAD_NUM as usize) / thread_num).max(2) as u8;
+
+        let mut handles = Vec::with_capacity(thread_num);
+        let mut offset = 0usize;
+        for t in 0..thread_num {
+            let model_path = model_path.clone();
+            let game_num = (base + if t < remain { 1 } else { 0 }) as u16;
+            let start_id = start_batch_id + offset as u16;
+            offset += game_num as usize;
+            handles.push(tokio::task::spawn_blocking(move || {
+                if let Ok(m) = NeuralNetwork::new(
+                    &model_path,
+                    cfg::DEFAULT_BATCH_SIZE as usize,
+                    intra_thread_num,
+                ) {
+                    // Rc 仅在当前线程内使用;NeuralNetwork 仅含 UnboundedSender,可跨线程 move
+                    let model_ref = Rc::new(RefCell::new(m));
+                    let sp = SelfPlay::new(model_ref);
+                    let rt = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build();
+                    match rt {
+                        Ok(rt) => rt.block_on(sp.self_play_for_train(game_num, start_id)),
+                        Err(error) => eprintln!("Create runtime error: {}", error),
+                    }
+                } else {
+                    eprintln!("Load model error!!!");
+                }
+            }));
+        }
+        for handle in handles {
+            if let Err(error) = handle.await {
+                eprintln!("Self play thread error: {}", error);
+            }
         }
     } else {
         eprintln!("Can not find current folder!!!");

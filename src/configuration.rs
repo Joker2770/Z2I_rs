@@ -20,7 +20,9 @@ pub mod cfg {
     // Dirichlet 分布集中度参数 α(AlphaZero 论文取 0.3)
     pub const DIRICHLET_ALPHA: f64 = 0.3;
     pub const DEFAULT_INTRA_THREAD_NUM: u8 = 16;
-    pub const NUM_2_SELF_PLAY: u16 = 10;
+    pub const NUM_2_SELF_PLAY: u16 = 100;
+    // 并行自对弈实例数(每个实例独立加载 ONNX session 与推理线程)
+    pub const NUM_2_SELF_PLAY_THREADS: u8 = 4;
     // 验收评估:候选 vs 当前最佳,和棋按 DRAW_SCORE 计分,
     // 胜率超过 UPDATE_THRESHOLD 则候选成为新 best(AlphaZero 论文为 55%)
     pub const UPDATE_THRESHOLD: f64 = 0.55;
