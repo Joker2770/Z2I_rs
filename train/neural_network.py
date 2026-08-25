@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 # import sys
 # import os
-import random
 
 import torch
 import torch.nn as nn
@@ -160,12 +159,15 @@ class NeuralNetWorkWrapper():
 
     def train(self, example_buffer, batch_size, epochs):
         """train neural network
+           epochs: 总 mini-batch 更新次数(带放回采样)
         """
+        n_data = len(example_buffer)
         for epo in range(1, epochs + 1):
             self.neural_network.train()
 
-            # sample
-            train_data = random.sample(example_buffer, batch_size)
+            # 带放回采样,O(batch_size);AlphaZero 论文做法
+            sample_idx = np.random.randint(0, n_data, size=batch_size)
+            train_data = [example_buffer[i] for i in sample_idx]
 
 
             # extract train data
@@ -184,18 +186,17 @@ class NeuralNetWorkWrapper():
             # forward + backward + optimize
             log_ps, vs = self.neural_network(state_batch)
             loss = self.alpha_loss(log_ps, vs, p_batch, v_batch)
-            loss.backward()
 
+            # entropy 直接由 log_ps 计算,避免第二次前向
+            with torch.no_grad():
+                probs = torch.exp(log_ps)
+                entropy = -float(torch.mean(torch.sum(probs * log_ps, dim=1)))
+
+            loss.backward()
             self.optim.step()
 
-            # calculate entropy
-            new_p, _ = self._infer(state_batch)
-
-            entropy = -np.mean(
-                np.sum(new_p * np.log(new_p + 1e-10), axis=1)
-            )
-
-            print("EPOCH: {}, LOSS: {}, ENTROPY: {}".format(epo, loss.item(), entropy))
+            if epo % 20 == 0 or epo == epochs:
+                print("EPOCH: {}/{}, LOSS: {}, ENTROPY: {}".format(epo, epochs, loss.item(), entropy))
 
     def infer(self, feature_batch):
         """predict p and v by raw input
@@ -229,18 +230,24 @@ class NeuralNetWorkWrapper():
         state0 = (board_batch > 0).float()
         state1 = (board_batch < 0).float()
 
-        state2 = torch.zeros((len(last_action_batch), 1, n, n)).float()
+        # 当前玩家为白(-1)时交换两个通道,统一为当前玩家视角(向量化)
+        cur_player = np.asarray(cur_player_batch, dtype=np.int64)
+        swap = torch.from_numpy(cur_player == -1)
+        if swap.any():
+            tmp = state0[swap].clone()
+            state0[swap] = state1[swap]
+            state1[swap] = tmp
 
-        for i in range(len(board_batch)):
-            if cur_player_batch[i] == -1:
-                temp = state0[i].clone()
-                state0[i].copy_(state1[i])
-                state1[i].copy_(temp)
-
-            last_action = last_action_batch[i]
-            if last_action != -1:
-                x, y = last_action // self.n, last_action % self.n
-                state2[i][0][x][y] = 1
+        # last_action 标记(向量化)
+        state2 = torch.zeros((len(board_batch), 1, n, n)).float()
+        last_action = np.asarray(last_action_batch, dtype=np.int64)
+        valid = np.nonzero(last_action >= 0)[0]
+        if valid.size > 0:
+            pos = last_action[valid]
+            rows = torch.from_numpy(valid)
+            xs = torch.from_numpy(pos // n)
+            ys = torch.from_numpy(pos % n)
+            state2[rows, 0, xs, ys] = 1
 
         res =  torch.cat((state0, state1, state2), dim=1)
         # res = torch.cat((state0, state1), dim=1)
@@ -291,6 +298,10 @@ class NeuralNetWorkWrapper():
                           input_names=["board"],
                           output_names=['P', 'V'],
                           dynamic_axes=dynamic_axes)
+
+        # 恢复训练设备,避免后续复用同一进程时静默回到 CPU
+        if self.is_cuda_available:
+            self.neural_network.cuda()
 
 
 if __name__ == '__main__':

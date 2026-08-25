@@ -6,7 +6,7 @@ import numpy as np
 from common import config
 # import pickle
 # import concurrent.futures
-import random, struct
+import random
 # from functools import reduce
 
 import sys
@@ -87,6 +87,21 @@ class Learner():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
+        # 每轮只使用最新一代自对弈数据,训练后将 data 目录中的文件
+        # 移动到同级 data_backup 目录归档,避免旧策略数据参与下一轮训练
+        data_backup_path = path.join(path.dirname(data_path), 'data_backup')
+        try:
+            mkdir(data_backup_path)
+        except FileExistsError:
+            pass
+        for file_name in os.listdir(data_path):
+            try:
+                os.rename(path.join(data_path, file_name),
+                          path.join(data_backup_path, file_name))
+            except OSError:
+                pass
+        print(f"moved training data to: {data_backup_path}")
+
     def get_symmetries(self, board, pi, last_action):
         # mirror, rotational
         assert (len(pi) == self.action_size)  # 1 for pass
@@ -105,7 +120,7 @@ class Learner():
                 if j:
                     newB = np.fliplr(newB)
                     newPi = np.fliplr(newPi)
-                    newAction = np.fliplr(last_action_board)
+                    newAction = np.fliplr(newAction)
                 l += [(newB, newPi.ravel(), np.argmax(newAction) if last_action != -1 else -1)]
         return l
 
@@ -113,48 +128,20 @@ class Learner():
         """load self.examples_buffer
         """
         BOARD_SIZE = self.n
+        N2 = BOARD_SIZE * BOARD_SIZE
         train_examples = []
         data_files = os.listdir(folder)
         for file_name in data_files:
             file_path = path.join(folder, file_name)
             with open(file_path, 'rb') as binfile:
                 # size = os.path.getsize(filepath) #获得文件大小
-                step = binfile.read(4)
-                step = int().from_bytes(step, byteorder='little', signed=True)
-                board = np.zeros((step, BOARD_SIZE * BOARD_SIZE))
-                for i in range(step):
-                    for j in range(BOARD_SIZE * BOARD_SIZE):
-                        data = binfile.read(4)
-                        data = int().from_bytes(data, byteorder='little', signed=True)
-                        board[i][j] = data
-                board = np.reshape(board,(-1,BOARD_SIZE,BOARD_SIZE))
-                prob = np.zeros((step, BOARD_SIZE * BOARD_SIZE))
-                for i in range(step):
-                    for j in range(BOARD_SIZE * BOARD_SIZE):
-                        data = binfile.read(4)
-                        data = struct.unpack('f', data)[0]
-                        prob[i][j] = data
-                        # p = p.reshape((-1,BOARD_SIZE,BOARD_SIZE))
-                    # print(p)
-
-                v = []
-                for i in range(step):
-                    data = binfile.read(4)
-                    data = int().from_bytes(data, byteorder='little', signed=True)
-                    v.append(data)
-                    # print(v)
-
-                color = []
-                for i in range(step):
-                    data = binfile.read(4)
-                    data = int().from_bytes(data, byteorder='little', signed=True)
-                    color.append(data)
-
-                last_action = []
-                for i in range(step):
-                    data = binfile.read(4)
-                    data = int().from_bytes(data, byteorder='little', signed=True)
-                    last_action.append(data)
+                step = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
+                # 批量读取,避免逐元素 Python 级 IO
+                board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)
+                prob = np.frombuffer(binfile.read(step * N2 * 4), dtype='<f4').reshape(step, N2)
+                v = np.frombuffer(binfile.read(step * 4), dtype='<i4')
+                color = np.frombuffer(binfile.read(step * 4), dtype='<i4')
+                last_action = np.frombuffer(binfile.read(step * 4), dtype='<i4')
 
                 for i in range(step):
                     sym = self.get_symmetries(board[i], prob[i], last_action[i])
