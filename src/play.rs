@@ -77,6 +77,8 @@ impl SelfPlay {
                 let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
                 println!("Step: {}", step);
                 let board = game_ref.borrow().get_board().clone();
+                // 训练目标保存加噪前的干净 π(搜索改善后的策略);
+                // Dirichlet 噪声只用于选子、不注入训练目标(与 AlphaGo Zero 及 junxiaosong 参考一致)
                 for (i, p) in action_probs.iter().enumerate() {
                     p_buffer[step as usize][i] = *p;
                 }
