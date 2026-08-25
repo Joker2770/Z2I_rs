@@ -220,7 +220,6 @@ pub async fn eval(
 
 #[tokio::main]
 async fn main() {
-    const PASS_THRESHOLD: f64 = 0.6;
     let args: Vec<String> = env::args().collect();
     if args[1] == "prepare" {
         println!("Prepare for training.");
@@ -244,21 +243,19 @@ async fn main() {
 
         if let Ok(content) = fs::read_to_string("current_and_best_weight.txt") {
             let mut iter = content.split_whitespace();
-            if let Some(item) = iter.next() {
-                let cur_weight: i32 = item.parse().unwrap();
+            let cur_weight: i32 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(-1);
+            let best_weight: i32 = iter.next().and_then(|s| s.parse().ok()).unwrap_or(-1);
 
-                if cur_weight < 0 {
-                    println!("LOAD error,check current_and_best_weight.txt");
-                    return;
-                } else {
-                    println!(
-                        "Generating... current_weight = {} start batch id: {}",
-                        cur_weight, start_batch_id
-                    );
-                    generate_data_for_train(cur_weight as u16, start_batch_id).await;
-                }
+            if best_weight < 0 {
+                println!("LOAD error,check current_and_best_weight.txt");
+                return;
             } else {
-                println!("current_and_best_weight.txt format error!!!");
+                // 自对弈数据应由已通过验收的最佳权重生成(AlphaZero 流程)
+                println!(
+                    "Generating... best_weight = {} current_weight = {} start batch id: {}",
+                    best_weight, cur_weight, start_batch_id
+                );
+                generate_data_for_train(best_weight as u16, start_batch_id).await;
             }
         } else {
             println!("Read current_and_best_weight.txt error!!!");
@@ -302,8 +299,9 @@ async fn main() {
                 + " tie:"
                 + &result.2.to_string()
                 + "\n";
-            let win_ratio = result.0 as f64 / (result.0 + result.1 + result.2) as f64;
-            if win_ratio > PASS_THRESHOLD {
+            let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
+                / (result.0 + result.1 + result.2) as f64;
+            if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
                     + &current_weight.to_string()
@@ -311,6 +309,17 @@ async fn main() {
                 fs::write(
                     "current_and_best_weight.txt",
                     current_weight.to_string() + " " + &current_weight.to_string(),
+                )
+                .expect("Unable to write file");
+            } else {
+                // 候选被拒:回退到 best,下一轮从 best 重新训练(AlphaZero 流程)
+                result_log_info = result_log_info
+                    + "candidate rejected, rollback to best weight: "
+                    + &best_weight.to_string()
+                    + "\n";
+                fs::write(
+                    "current_and_best_weight.txt",
+                    best_weight.to_string() + " " + &best_weight.to_string(),
                 )
                 .expect("Unable to write file");
             }
@@ -364,8 +373,9 @@ async fn main() {
                 + " tie: "
                 + &result.2.to_string()
                 + "\n";
-            let win_ratio = result.0 as f64 / (result.0 + result.1 + result.2) as f64;
-            if win_ratio > PASS_THRESHOLD {
+            let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
+                / (result.0 + result.1 + result.2) as f64;
+            if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
                     + &current_weight_id.to_string()

@@ -21,6 +21,10 @@ pub mod cfg {
     pub const DIRICHLET_ALPHA: f64 = 0.3;
     pub const DEFAULT_INTRA_THREAD_NUM: u8 = 16;
     pub const NUM_2_SELF_PLAY: u16 = 10;
+    // 验收评估:候选 vs 当前最佳,和棋按 DRAW_SCORE 计分,
+    // 胜率超过 UPDATE_THRESHOLD 则候选成为新 best(AlphaZero 论文为 55%)
+    pub const UPDATE_THRESHOLD: f64 = 0.55;
+    pub const DRAW_SCORE: f64 = 0.5;
     // 0 - free-style
     // 1 - standard
     // 4 - renju
