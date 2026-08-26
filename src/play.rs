@@ -73,9 +73,13 @@ impl SelfPlay {
             let mut hasher = Sha256::new();
             while game_status.0 == GameStage::Running {
                 let temp = get_temp(&step);
-                println!("temp: {}", temp);
+                if cfg::RENDER_AT_SELF_PLAY {
+                    println!("temp: {}", temp);
+                }
                 let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
-                println!("Step: {}", step);
+                if cfg::RENDER_AT_SELF_PLAY {
+                    println!("Step: {}", step);
+                }
                 let board = game_ref.borrow().get_board().clone();
                 // 训练目标保存加噪前的干净 π(搜索改善后的策略);
                 // Dirichlet 噪声只用于选子、不注入训练目标(与 AlphaGo Zero 及 junxiaosong 参考一致)
@@ -129,14 +133,22 @@ impl SelfPlay {
                 let rst = mcts.get_action_by_sample(&action_probs);
                 mcts.update_root_with_action(&game_ref.borrow(), rst);
                 if !game_ref.borrow_mut().execute_move(rst) {
+                    // 防御:落子失败退出前也更新一次终局状态,
+                    // 避免后续 win_col_2_i 基于未更新的旧状态计算
+                    game_status = {
+                        let mut game = game_ref.borrow_mut();
+                        *game.get_game_status()
+                    };
                     break;
                 }
                 game_status = {
                     let mut game = game_ref.borrow_mut();
                     *game.get_game_status()
                 };
-                game_ref.borrow().render();
-                println!();
+                if cfg::RENDER_AT_SELF_PLAY {
+                    game_ref.borrow().render();
+                    println!();
+                }
                 step = step.saturating_add(1);
             }
 
