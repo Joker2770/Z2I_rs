@@ -46,7 +46,7 @@ pub mod cfg {
     pub const RENDER_AT_EVAL: bool = true;
     // 自对弈(训练数据生成)是否逐步渲染棋盘与打印 temp/Step
     // 并行生成时建议保持 false,避免输出交错与无谓开销
-    pub const RENDER_AT_SELF_PLAY: bool = false;
+    pub const RENDER_AT_SELF_PLAY: bool = true;
     pub const INFER_TASK_WAIT_US: u16 = 2;
     // suggest < 256, and >= 1
     pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
