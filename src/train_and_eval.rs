@@ -22,7 +22,9 @@ use ortopt::NeuralNetwork;
 use play::SelfPlay;
 use rule::Color;
 
-use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
+use std::{
+    cell::RefCell, collections::HashMap, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize,
+};
 
 pub fn sims_for_weight(weight_id: u16) -> usize {
     let boosted = cfg::DEFAULT_SIMULATION_NUM
@@ -254,6 +256,68 @@ pub async fn eval(
     run_eval_games(model_a, model_b, game_num, num_mcts_sim_a, num_mcts_sim_b).await
 }
 
+/// 读取 elo.txt 中持久化的各权重 Elo 评级(weight_id -> elo)
+fn load_elo() -> HashMap<i32, f64> {
+    let mut ratings = HashMap::new();
+    if let Ok(content) = fs::read_to_string("elo.txt") {
+        for line in content.lines() {
+            let mut iter = line.split_whitespace();
+            if let (Some(id), Some(elo)) = (iter.next(), iter.next()) {
+                if let (Ok(id), Ok(elo)) = (id.parse::<i32>(), elo.parse::<f64>()) {
+                    ratings.insert(id, elo);
+                }
+            }
+        }
+    }
+    ratings
+}
+
+/// 将 Elo 评级写回 elo.txt
+fn save_elo(ratings: &HashMap<i32, f64>) {
+    let mut ids: Vec<i32> = ratings.keys().copied().collect();
+    ids.sort_unstable();
+    let content = ids
+        .iter()
+        .map(|id| format!("{} {:.1}", id, ratings[id]))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if !content.is_empty() {
+        _ = fs::write("elo.txt", content + "\n");
+    }
+}
+
+/// 根据一场评估赛结果更新双方 Elo,返回日志描述
+fn update_elo(weight_a: i32, weight_b: i32, result: (u16, u16, u16)) -> String {
+    let total = result.0 + result.1 + result.2;
+    if total == 0 {
+        return String::new();
+    }
+    // a 的得分率:胜 1 分、和 DRAW_SCORE 分
+    let score_a = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64) / total as f64;
+
+    let mut ratings = load_elo();
+    let rating_a = ratings.get(&weight_a).copied().unwrap_or(cfg::ELO_INITIAL);
+    let rating_b = ratings.get(&weight_b).copied().unwrap_or(cfg::ELO_INITIAL);
+
+    // 标准 Elo:期望胜率 = 1 / (1 + 10^((Rb - Ra) / 400))
+    let expected_a = 1.0 / (1.0 + 10f64.powf((rating_b - rating_a) / 400.0));
+    let delta = cfg::ELO_K * (score_a - expected_a);
+    let new_a = rating_a + delta;
+    let new_b = rating_b - delta;
+    ratings.insert(weight_a, new_a);
+    ratings.insert(weight_b, new_b);
+    save_elo(&ratings);
+
+    // 由本场得分率反推的比赛表现 Elo 差(a 相对 b),截断避免 0/1 极端值
+    let s = score_a.clamp(1e-3, 1.0 - 1e-3);
+    let perf_diff = -400.0 * (1.0 / s - 1.0).log10();
+
+    format!(
+        "Elo: {}-th {:.1}->{:.1} ({:+0.1}), {}-th {:.1}->{:.1} ({:+0.1}), match diff {:+0.1}\n",
+        weight_a, rating_a, new_a, delta, weight_b, rating_b, new_b, -delta, perf_diff
+    )
+}
+
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
@@ -336,6 +400,8 @@ async fn main() {
                 + " tie:"
                 + &result.2.to_string()
                 + "\n";
+            let elo_info = update_elo(current_weight, best_weight, result);
+            result_log_info.push_str(&elo_info);
             let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
                 / (result.0 + result.1 + result.2) as f64;
             if win_ratio > cfg::UPDATE_THRESHOLD {
@@ -410,6 +476,8 @@ async fn main() {
                 + " tie: "
                 + &result.2.to_string()
                 + "\n";
+            let elo_info = update_elo(current_weight_id, -1, result);
+            result_log_info.push_str(&elo_info);
             let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
                 / (result.0 + result.1 + result.2) as f64;
             if win_ratio > cfg::UPDATE_THRESHOLD {

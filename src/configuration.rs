@@ -31,6 +31,9 @@ pub mod cfg {
     // 胜率超过 UPDATE_THRESHOLD 则候选成为新 best(AlphaZero 论文为 55%)
     pub const UPDATE_THRESHOLD: f64 = 0.55;
     pub const DRAW_SCORE: f64 = 0.5;
+    // Elo 评级:每场验收评估后按标准 Elo 公式更新(初始分 1500,K 因子 32)
+    pub const ELO_INITIAL: f64 = 1500.0;
+    pub const ELO_K: f64 = 32.0;
     // 模拟次数随权重代际增长(自对弈与验收评估共用,双方同 sims 保证公平):
     // sims = min(DEFAULT_SIMULATION_NUM + (weight_id / SIMS_BOOST_EVERY) * SIMS_BOOST_STEP, SIMS_CAP)
     pub const SIMS_BOOST_EVERY: u16 = 20;

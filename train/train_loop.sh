@@ -6,6 +6,7 @@
 #   2. learner.py:训练得到候选权重 current+1
 #   3. eval_with_winner:候选 vs best,胜率(和棋计 0.5)> UPDATE_THRESHOLD 则 best 更新,
 #      否则回退 current=best,下一轮从 best 重新训练
+#   4. 每场评估赛后按标准 Elo 公式更新双方评级,持久化到 elo.txt 并写入 eval_result.log
 #
 # 环境变量:
 #   WORK_DIR    训练工作目录(含 train_and_eval 二进制与 data/weights),默认 build
