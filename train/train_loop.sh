@@ -18,14 +18,17 @@ set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-build}"
 BIN="${BIN:-./train_and_eval}"
-NUM_CONTEST="${NUM_CONTEST:-20}"
+NUM_CONTEST="${NUM_CONTEST:-10}"
 BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
+# Colab 上使用 load-dynamic 的 CUDA 版 onnxruntime 时,取消注释并指向 libonnxruntime.so
+# export ORT_LIB_LOCATION=/path/to/libonnxruntime.so
 # 每 CHECK_FREQ 轮做一次验收评估(1=每轮评估);中间轮跳过评估、直接接纳候选
-CHECK_FREQ="${CHECK_FREQ:-1}"
-# 每轮生成 NUM_2_SELF_PLAY 局(src/configuration.rs),批次 id 步进与之保持一致
-STEP="${STEP:-100}"
+# Colab T4 会话有时限,默认隔轮评估以缩短单轮耗时
+CHECK_FREQ="${CHECK_FREQ:-2}"
+# 每轮生成 NUM_2_SELF_PLAY 局(src/configuration.rs,当前 16),批次 id 步进与之保持一致
+STEP="${STEP:-16}"
 
 cd "$WORK_DIR"
 

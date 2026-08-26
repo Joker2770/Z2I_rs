@@ -9,8 +9,10 @@ pub mod cfg {
     pub const C_PUCT: f32 = 2.5;
     pub const C_VIRTUAL_LOSS: f64 = 1.0;
     pub const CHANNEL_SIZE: u8 = 3;
-    pub const DEFAULT_BATCH_SIZE: u16 = 128;
-    pub const DEFAULT_SIMULATION_NUM: usize = 512;
+    // Colab T4:16GB 显存充裕,推理批可加大(CPU 并发实例少,收益有限但无副作用)
+    pub const DEFAULT_BATCH_SIZE: u16 = 256;
+    // Colab T4:2 vCPU 是瓶颈,基础仿真数下调;仍随权重代际增长(SIMS_BOOST_*)
+    pub const DEFAULT_SIMULATION_NUM: usize = 400;
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
     pub const EXPLORE_STEP: u16 = 15;
@@ -19,10 +21,12 @@ pub mod cfg {
     pub const DIRI: f64 = 0.25;
     // Dirichlet 分布集中度参数 α(AlphaZero 论文取 0.3)
     pub const DIRICHLET_ALPHA: f64 = 0.3;
-    pub const DEFAULT_INTRA_THREAD_NUM: u8 = 16;
-    pub const NUM_2_SELF_PLAY: u16 = 100;
+    // Colab T4 仅 2 vCPU,16 线程严重超额订阅;下调后生成阶段每实例实得 max(4/2,2)=2
+    pub const DEFAULT_INTRA_THREAD_NUM: u8 = 4;
+    // Colab T4:每批自对弈局数下调,保证单轮 generate 在会话限制内完成
+    pub const NUM_2_SELF_PLAY: u16 = 16;
     // 并行自对弈实例数(每个实例独立加载 ONNX session 与推理线程)
-    pub const NUM_2_SELF_PLAY_THREADS: u8 = 4;
+    pub const NUM_2_SELF_PLAY_THREADS: u8 = 2;
     // 验收评估:候选 vs 当前最佳,和棋按 DRAW_SCORE 计分,
     // 胜率超过 UPDATE_THRESHOLD 则候选成为新 best(AlphaZero 论文为 55%)
     pub const UPDATE_THRESHOLD: f64 = 0.55;
@@ -30,8 +34,9 @@ pub mod cfg {
     // 模拟次数随权重代际增长(自对弈与验收评估共用,双方同 sims 保证公平):
     // sims = min(DEFAULT_SIMULATION_NUM + (weight_id / SIMS_BOOST_EVERY) * SIMS_BOOST_STEP, SIMS_CAP)
     pub const SIMS_BOOST_EVERY: u16 = 20;
-    pub const SIMS_BOOST_STEP: usize = 128;
-    pub const SIMS_CAP: usize = 1600;
+    // Colab T4:代际增长步长与上限同步下调,避免高代际仿真量超出 2 vCPU 承受范围
+    pub const SIMS_BOOST_STEP: usize = 64;
+    pub const SIMS_CAP: usize = 1200;
     // 0 - free-style
     // 1 - standard
     // 4 - renju
