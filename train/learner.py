@@ -1,6 +1,7 @@
 from collections import deque
 from os import path, mkdir
 import os
+import sys
 import torch
 import numpy as np
 from common import config
@@ -9,11 +10,12 @@ from common import config
 import random
 # from functools import reduce
 
-import sys
-
-sys.path.append('../build')
-
 from neural_network import NeuralNetWorkWrapper
+
+# 训练工作目录:默认仓库根下的 build/,可用环境变量 BUILD_DIR 覆盖;
+# 基于脚本自身位置推导,不依赖运行时 cwd
+REPO_ROOT = path.dirname(path.dirname(path.abspath(__file__)))
+BUILD_DIR = os.environ.get('BUILD_DIR') or path.join(REPO_ROOT, 'build')
 
 
 class Learner():
@@ -81,7 +83,7 @@ class Learner():
         #     # self.nnet.save_model()
         #     self.nnet.save_model(model_path)
 
-        data_path = path.join('..', 'build', 'data')
+        data_path = path.join(BUILD_DIR, 'data')
         train_data = self.load_samples(data_path)
         random.shuffle(train_data)
 
@@ -159,7 +161,7 @@ class Learner():
 
 
 if __name__ == '__main__':
-    model_dir = path.join("..","build","weights")
+    model_dir = path.join(BUILD_DIR, "weights")
     le = Learner(config)
     if len(sys.argv) <= 1 or sys.argv[1] == "prepare":
         print("save 0-th model !!")
@@ -167,10 +169,11 @@ if __name__ == '__main__':
         print("done !")
     else:
         assert sys.argv[1] == "train", sys.argv[1]
-        with open(path.join("..","build","current_and_best_weight.txt"), 'r') as f:
+        weight_file = path.join(BUILD_DIR, "current_and_best_weight.txt")
+        with open(weight_file, 'r') as f:
             current_id, best_id =  f.readline().split(" ")
             current_id = int(current_id)
         le.learn(model_dir=model_dir, model_id=current_id)
-        with open(path.join("..","build","current_and_best_weight.txt"), 'w') as f:
+        with open(weight_file, 'w') as f:
             f.write(str(int(current_id)+1) + " "+ str(best_id))
         

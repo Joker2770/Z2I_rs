@@ -29,6 +29,10 @@ STEP="${STEP:-100}"
 
 cd "$WORK_DIR"
 
+# learner.py 使用的训练工作目录绝对路径(未设置时取当前目录),与 WORK_DIR 对齐
+BUILD_DIR="${BUILD_DIR:-$PWD}"
+export BUILD_DIR
+
 for ((iter=1; iter<=MAX_ITERS; iter++)); do
     echo "===== iter $iter: generate batch $BATCH_ID ====="
     "$BIN" generate "$BATCH_ID"
