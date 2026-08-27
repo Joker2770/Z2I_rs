@@ -241,8 +241,9 @@ impl MCTS {
 
     /// 在截止时间前尽可能多地执行仿真批次：
     /// - `deadline` 为 `None`：跑满配置的仿真次数；
-    /// - 否则至少执行一批（保证根节点有子节点可选出着法），
-    ///   之后每批开始前若时间盈余不足 `TIME_RESERVE_MS` 毫秒即停止仿真。
+    /// - 时间盈余不足以完成一个批次时，仅执行 1 次仿真（保证根节点被展开、
+    ///   可选出合理着法）后立即返回；
+    /// - 否则每批开始前若时间盈余不足 `TIME_RESERVE_MS` 毫秒即停止仿真。
     pub async fn get_action_probs_within(
         &self,
         gomoku: &Gomoku,
@@ -390,6 +391,16 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
+        // 剩余时间不足以完成一个批次（例如 timeout_turn=0 表示尽快落子）：
+        // 不再等待整批并发仿真，只执行 1 次仿真。单次仿真已足够展开根节点
+        // （获得网络先验并积累 1 次访问），之后仍能按 PUCT/访问次数选出合理
+        // 着法；响应时间由整批（debug 构建下数百毫秒以上）缩短为单次推理。
+        if let Some(deadline) = deadline
+            && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
+        {
+            self.simulation(gomoku).await;
+            return;
+        }
         for batches_done in 0..sim_batch {
             if batches_done > 0
                 && let Some(deadline) = deadline
@@ -414,6 +425,13 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
+        // 与 `simulation_within` 相同的快速路径：时间不足时仅做 1 次仿真。
+        if let Some(deadline) = deadline
+            && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
+        {
+            self.simulation(gomoku).await;
+            return;
+        }
         let mut next_report = Instant::now() + report_interval;
         for batches_done in 0..sim_batch {
             if batches_done > 0
@@ -756,7 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn past_deadline_stops_after_first_batch() {
+    async fn past_deadline_runs_single_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
         let mcts = MCTS::new(
             None,
@@ -773,8 +791,9 @@ mod tests {
             .await;
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        // 时间不足时不做整批仿真，仅执行 1 次仿真后立即返回（快速响应）
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
-        assert_eq!(root_visits, cfg::DEFAULT_SIM_PER_BATCH_NUM as usize);
+        assert_eq!(root_visits, 1);
     }
 
     #[tokio::test]
