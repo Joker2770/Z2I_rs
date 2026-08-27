@@ -88,9 +88,50 @@ impl Default for AppConfig {
     }
 }
 
+/// 用户级配置目录:
+/// - Linux 遵循 XDG:`$XDG_CONFIG_HOME/Z2I_rs`,未设置时回退 `~/.config/Z2I_rs`;
+/// - macOS:`~/Library/Application Support/Z2I_rs`;
+/// - Windows:`%APPDATA%\Z2I_rs`。
+fn user_config_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(dir) = env::var("XDG_CONFIG_HOME") {
+            let dir = PathBuf::from(dir);
+            // XDG 规范:相对路径的值应忽略
+            if dir.is_absolute() && !dir.as_os_str().is_empty() {
+                return Some(dir.join("Z2I_rs"));
+            }
+        }
+        env::var("HOME")
+            .ok()
+            .map(|home| PathBuf::from(home).join(".config").join("Z2I_rs"))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        env::var("HOME").ok().map(|home| {
+            PathBuf::from(home)
+                .join("Library")
+                .join("Application Support")
+                .join("Z2I_rs")
+        })
+    }
+    #[cfg(target_os = "windows")]
+    {
+        env::var("APPDATA")
+            .ok()
+            .map(|dir| PathBuf::from(dir).join("Z2I_rs"))
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+    {
+        None
+    }
+}
+
 impl AppConfig {
     fn load() -> Self {
+        // 查找优先级:用户配置目录 > 当前工作目录 > 可执行文件所在目录
         let candidates = [
+            user_config_dir().map(|dir| dir.join("config.toml")),
             env::current_dir().ok().map(|path| path.join("config.toml")),
             env::current_exe()
                 .ok()
@@ -100,7 +141,10 @@ impl AppConfig {
         for path in candidates.into_iter().flatten() {
             if let Ok(contents) = std::fs::read_to_string(&path) {
                 match toml::from_str(&contents) {
-                    Ok(config) => return config,
+                    Ok(config) => {
+                        eprintln!("MESSAGE loaded config from {}", path.display());
+                        return config;
+                    }
                     Err(error) => eprintln!("MESSAGE failed to parse {}: {error}", path.display()),
                 }
             }

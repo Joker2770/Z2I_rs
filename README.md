@@ -45,7 +45,13 @@ CUDA 运行还需要主机安装与 ONNX Runtime/CUDA provider 匹配的 CUDA �
 
 ## 模型与配置
 
-程序会在当前工作目录和可执行文件所在目录查找 `config.toml`。没有配置文件时使用源码中的默认模型路径和 MCTS 参数。
+程序按以下优先级查找 `config.toml`,使用第一个存在的文件:
+
+1. 用户配置目录:Linux `$XDG_CONFIG_HOME/Z2I_rs/`(未设置时为 `~/.config/Z2I_rs/`)、macOS `~/Library/Application Support/Z2I_rs/`、Windows `%APPDATA%\Z2I_rs\`;
+2. 当前工作目录;
+3. 可执行文件所在目录。
+
+均不存在时使用源码中的默认模型路径和 MCTS 参数。放在用户目录中的配置建议将模型路径写成绝对路径(相对路径仍按当前工作目录/可执行文件目录解析)。
 
 示例：
 
