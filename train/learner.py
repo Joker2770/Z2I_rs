@@ -139,24 +139,44 @@ class Learner():
         """
         BOARD_SIZE = self.n
         N2 = BOARD_SIZE * BOARD_SIZE
+        # 单个样本的字节数: board(N2 个 i32) + prob(N2 个 f32) + v/color/last_action(3 个 i32)
+        bytes_per_step = N2 * 4 + N2 * 4 + 3 * 4
         train_examples = []
         data_files = os.listdir(folder)
         for file_name in data_files:
             file_path = path.join(folder, file_name)
-            with open(file_path, 'rb') as binfile:
-                # size = os.path.getsize(filepath) #获得文件大小
-                step = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
-                # 批量读取,避免逐元素 Python 级 IO
-                board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)
-                prob = np.frombuffer(binfile.read(step * N2 * 4), dtype='<f4').reshape(step, N2)
-                v = np.frombuffer(binfile.read(step * 4), dtype='<i4')
-                color = np.frombuffer(binfile.read(step * 4), dtype='<i4')
-                last_action = np.frombuffer(binfile.read(step * 4), dtype='<i4')
+            if not path.isfile(file_path):
+                continue
+            try:
+                file_size = path.getsize(file_path)
+            except OSError as error:
+                print(f"skip unreadable data file {file_path}: {error}")
+                continue
+            try:
+                with open(file_path, 'rb') as binfile:
+                    step = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
+                    expected_size = 4 + step * bytes_per_step
+                    # 自对弈进程可能仍在写入,或上次运行中断留下半成品文件;
+                    # 大小不匹配的文件直接跳过,避免 reshape 抛 ValueError
+                    if step <= 0 or file_size < expected_size:
+                        print(f"skip incomplete data file {file_path}: "
+                              f"step={step}, size={file_size}, expected={expected_size}")
+                        continue
+                    # 批量读取,避免逐元素 Python 级 IO
+                    board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)
+                    prob = np.frombuffer(binfile.read(step * N2 * 4), dtype='<f4').reshape(step, N2)
+                    v = np.frombuffer(binfile.read(step * 4), dtype='<i4')
+                    color = np.frombuffer(binfile.read(step * 4), dtype='<i4')
+                    last_action = np.frombuffer(binfile.read(step * 4), dtype='<i4')
 
-                for i in range(step):
-                    sym = self.get_symmetries(board[i], prob[i], last_action[i])
-                    for b, p, a in sym:
-                        train_examples.append([b, a, color[i], p, v[i]])
+                    for i in range(step):
+                        sym = self.get_symmetries(board[i], prob[i], last_action[i])
+                        for b, p, a in sym:
+                            train_examples.append([b, a, color[i], p, v[i]])
+            except (ValueError, OSError) as error:
+                print(f"skip corrupted data file {file_path}: {error}")
+                continue
+        print(f"loaded {len(train_examples)} samples from {folder}")
         return train_examples
 
 

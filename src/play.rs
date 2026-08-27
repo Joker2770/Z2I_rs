@@ -177,7 +177,9 @@ impl SelfPlay {
                 .map(fs::create_dir_all)
                 .transpose()
                 .expect("Unable to create dirs");
-            let mut file = fs::File::create(new_path).expect("Unable to create file");
+            // 先写临时文件,全部写完后原子重命名,避免训练侧读到写了一半的数据文件
+            let tmp_path = new_path.with_extension("part");
+            let mut file = fs::File::create(&tmp_path).expect("Unable to create file");
             _ = file.write_all(&(step as i32).to_ne_bytes());
 
             for i in 0..step {
@@ -207,6 +209,10 @@ impl SelfPlay {
             }
             for i in 0..step {
                 _ = file.write_all(&(last_move_buffer[i as usize] as i32).to_ne_bytes());
+            }
+            drop(file);
+            if let Err(error) = fs::rename(&tmp_path, &new_path) {
+                eprintln!("Rename data file error: {}", error);
             }
         }
     }
