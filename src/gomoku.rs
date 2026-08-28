@@ -122,7 +122,9 @@ impl CheckResult {
         }
 
         if RuleFlag::FreeStyle != flag {
-            is_win = *rule_flag & flag == flag;
+            // 组合规则(如 standard-caro = 0b1001)要求所有必需子规则同时判胜:
+            // flag 是本次全部判胜子规则的并集,必须包含 rule_flag 的每一位。
+            is_win = *rule_flag & flag == *rule_flag;
         }
 
         if is_win {
@@ -473,6 +475,92 @@ mod tests {
             &[(0, Color::Black), (1, Color::Black), (7, Color::Black)],
             Color::White,
         ));
+        assert_eq!(
+            gomoku.get_game_status(),
+            &(GameStage::Running, Color::Blank)
+        );
+    }
+
+    // --- INFO rule 9:标准 caro(0b1001 = exactly-five(1) | caro(8)) ---
+
+    fn standard_caro() -> RuleFlag {
+        RuleFlag::Standard | RuleFlag::Caro
+    }
+
+    /// 构造 15x15 棋局、应用 rule 9 并加载局面。
+    /// 注意:`get_game_status` 以 `last_move` 为判胜检查点,因此 stones
+    /// 的最后一个元素必须是需要判定的关键落子;且总手数需 ≥ 9 才会触发规则判定。
+    fn rule9_game(stones: &[(u16, Color)]) -> Gomoku {
+        let mut gomoku = Gomoku::new(15, 5).unwrap();
+        assert!(gomoku.set_rule(standard_caro()));
+        assert!(gomoku.load_position(stones, Color::White));
+        gomoku
+    }
+
+    #[test]
+    fn rule_9_is_standard_caro_bitmask() {
+        // 协议:rule = 位掩码,1=exactly five,8=caro,9=两者之和
+        assert_eq!(
+            RuleFlag::from_bits_truncate(9),
+            RuleFlag::Standard | RuleFlag::Caro
+        );
+    }
+
+    #[test]
+    fn standard_caro_open_five_wins() {
+        // xxxxx,两端均未堵 → 胜
+        let mut stones = vec![
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+            (3, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule9_game(&stones);
+        assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+    }
+
+    #[test]
+    fn standard_caro_five_blocked_at_one_end_wins() {
+        // o xxxxx _,仅一端被堵 → 胜
+        let mut stones = vec![
+            ((7 * 15 + 3) as u16, Color::White),
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule9_game(&stones);
+        assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+    }
+
+    #[test]
+    fn standard_caro_five_blocked_at_both_ends_is_not_win() {
+        // o xxxxx o,恰好五连但两端被堵 → 不判胜
+        let mut stones = vec![
+            ((7 * 15 + 3) as u16, Color::White),
+            ((7 * 15 + 9) as u16, Color::White),
+            (0u16, Color::White),
+            (1, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule9_game(&stones);
+        assert_eq!(
+            gomoku.get_game_status(),
+            &(GameStage::Running, Color::Blank)
+        );
+    }
+
+    #[test]
+    fn standard_caro_six_in_a_row_is_not_win() {
+        // xxxxxx,长连不满足 exactly five → 不判胜
+        let mut stones = vec![
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+        ];
+        stones.extend((3..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule9_game(&stones);
         assert_eq!(
             gomoku.get_game_status(),
             &(GameStage::Running, Color::Blank)

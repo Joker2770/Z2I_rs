@@ -820,4 +820,55 @@ mod tests {
 
         assert!(!brain.load_board(&[(112, 1), (112, 2)]));
     }
+
+    // --- INFO rule 9:标准 caro(0b1001 = exactly-five(1) | caro(8)) ---
+
+    #[test]
+    fn info_rule_9_parses_to_standard_caro() {
+        assert_eq!(
+            RuleFlag::from_bits_truncate(9),
+            RuleFlag::Standard | RuleFlag::Caro
+        );
+    }
+
+    #[test]
+    fn info_rule_9_selects_standard_caro_model() {
+        let mut brain = test_brain();
+
+        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // INFO rule 9
+
+        assert_eq!(brain.rule, RuleFlag::Standard | RuleFlag::Caro);
+        assert_eq!(
+            brain.config.model_path(brain.rule),
+            Path::new("models/standard-caro.onnx")
+        );
+    }
+
+    #[test]
+    fn info_rule_9_before_start_is_applied_on_start() {
+        let mut brain = test_brain();
+
+        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // START 之前到达
+        assert!(brain.start(15));
+
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_rule(),
+            &(RuleFlag::Standard | RuleFlag::Caro)
+        );
+    }
+
+    #[test]
+    fn info_rule_9_after_start_reinitializes_game() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // START 之后、尚未落子
+
+        assert_eq!(brain.rule, RuleFlag::Standard | RuleFlag::Caro);
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_rule(),
+            &(RuleFlag::Standard | RuleFlag::Caro)
+        );
+        assert!(brain.mcts.is_some());
+    }
 }
