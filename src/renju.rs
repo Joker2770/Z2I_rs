@@ -621,4 +621,162 @@ mod tests {
         let judge = RenjuJudge::new();
         assert!(judge.is_double_four(&board, last_move));
     }
+
+    // --- RIF 规则对照探针 ---
+
+    const N: usize = 15;
+
+    fn idx(row: usize, col: usize) -> usize {
+        row * N + col
+    }
+
+    fn board_with(stones: &[(usize, Color)]) -> Board {
+        let mut board = vec![vec![Color::Blank; N]; N];
+        for &(i, c) in stones {
+            board[i / N][i % N] = c;
+        }
+        board
+    }
+
+    #[test]
+    fn black_exact_five_wins() {
+        // RIF 9.1:黑方恰好五连获胜
+        let stones = vec![
+            (idx(7, 4), Color::Black),
+            (idx(7, 5), Color::Black),
+            (idx(7, 7), Color::Black),
+            (idx(7, 8), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(7, 6) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::FiveInARow);
+    }
+
+    #[test]
+    fn black_six_is_overline_not_win() {
+        // RIF 9.1/9.2a:黑方长连不算获胜,是禁手
+        let stones = vec![
+            (idx(7, 3), Color::Black),
+            (idx(7, 4), Color::Black),
+            (idx(7, 5), Color::Black),
+            (idx(7, 7), Color::Black),
+            (idx(7, 8), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.check_win(&board, idx(7, 6) as i16));
+        assert!(!judge.is_legal(&board, idx(7, 6) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::Overline);
+    }
+
+    #[test]
+    fn white_overline_wins() {
+        // RIF 9.1:白方长连也算获胜
+        let stones = vec![
+            (idx(7, 3), Color::White),
+            (idx(7, 4), Color::White),
+            (idx(7, 5), Color::White),
+            (idx(7, 7), Color::White),
+            (idx(7, 8), Color::White),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::White;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(7, 6) as i16));
+    }
+
+    #[test]
+    fn single_straight_four_is_legal() {
+        // RIF:单个活四(straight four)合法,不是四四禁手
+        let stones = vec![
+            (idx(7, 4), Color::Black),
+            (idx(7, 5), Color::Black),
+            (idx(7, 7), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_four(&board, idx(7, 6) as i16));
+        assert!(judge.is_legal(&board, idx(7, 6) as i16));
+    }
+
+    #[test]
+    fn gapped_double_four_is_forbidden() {
+        // RIF 9.2b:x_xxx_x 同时形成两个"间四",是四四禁手
+        // {7,4},{7,6},{7,7},{7,8} 补 {7,5} 成五;{7,6},{7,7},{7,8},{7,10} 补 {7,9} 成五
+        let stones = vec![
+            (idx(7, 4), Color::Black),
+            (idx(7, 7), Color::Black),
+            (idx(7, 8), Color::Black),
+            (idx(7, 10), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_four(&board, idx(7, 6) as i16));
+        assert!(!judge.is_legal(&board, idx(7, 6) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleFour);
+    }
+
+    #[test]
+    fn four_three_is_legal() {
+        // RIF:四三(一个四+一个三)合法,是黑方取胜手段
+        let stones = vec![
+            (idx(7, 4), Color::Black),
+            (idx(7, 5), Color::Black),
+            (idx(7, 7), Color::Black), // 横线活四 _xxxx_
+            (idx(5, 6), Color::Black), // 竖线三 __xxx_
+            (idx(6, 6), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][6] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_four_three(&board, idx(7, 6) as i16));
+        assert!(judge.is_legal(&board, idx(7, 6) as i16));
+    }
+
+    #[test]
+    fn double_three_is_forbidden() {
+        // RIF 9.2c:两个活三同时形成是禁手
+        // 横 _xx_x_(7,5),(7,6),(7,8);竖 _x_xx_(5,5),(7,5),(8,5) — 以 (7,5) 为落点
+        let stones = vec![
+            (idx(7, 6), Color::Black),
+            (idx(7, 8), Color::Black),
+            (idx(5, 5), Color::Black),
+            (idx(8, 5), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][5] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_three(&board, idx(7, 5) as i16));
+        assert!(!judge.is_legal(&board, idx(7, 5) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleThree);
+    }
+
+    #[test]
+    #[ignore = "RIF 9.3 例外未实现:该双三按规则应允许,当前实现判为禁手(保守误判)"]
+    fn rif_9_3_allowed_double_three() {
+        // RIF 9.3a:两个三中若只有一个能扩展成活四(另一个扩展时会形成四四禁手),
+        // 则此双三是允许的。当前实现会将其判为禁手(错误)。
+        // 竖三 V:(7,5),(8,5),(10,5),唯一扩展点 (9,5) 落子后形成
+        // 竖活四 (7,5)..(10,5) + 横四 (9,3),(9,4),(9,6),(9,5) → 四四禁手,故 V 不可扩展。
+        // 横三 H:(7,5),(7,6),(7,8),扩展点 (7,7) 正常成活四。
+        let stones = vec![
+            (idx(7, 6), Color::Black),
+            (idx(7, 8), Color::Black),
+            (idx(8, 5), Color::Black),
+            (idx(10, 5), Color::Black),
+            (idx(9, 3), Color::Black),
+            (idx(9, 4), Color::Black),
+            (idx(9, 6), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][5] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        // 按 RIF 9.3a 该着法应合法;当前实现判为双三禁手(误判)
+        assert!(judge.is_legal(&board, idx(7, 5) as i16));
+    }
 }
