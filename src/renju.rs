@@ -768,10 +768,10 @@ mod tests {
             (idx(7, 6), Color::Black),
             (idx(7, 8), Color::Black),
             (idx(8, 5), Color::Black),
-            (idx(10, 5), Color::Black),
-            (idx(9, 3), Color::Black),
-            (idx(9, 4), Color::Black),
             (idx(9, 6), Color::Black),
+            (idx(9, 4), Color::Black),
+            (idx(9, 3), Color::Black),
+            (idx(10, 5), Color::Black),
         ];
         let mut board = board_with(&stones);
         board[7][5] = Color::Black;
