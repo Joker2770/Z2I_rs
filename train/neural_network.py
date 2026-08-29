@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 # import sys
-# import os
+import os
 
 import torch
 import torch.nn as nn
@@ -277,6 +277,12 @@ class NeuralNetWorkWrapper():
     def save_model(self, filepath):
         """save model to file
         """
+        # 保存前先删除同名旧文件,避免残留过期模型
+        for suffix in ('.pkl', '.onnx'):
+            old_path = filepath + suffix
+            if os.path.exists(old_path):
+                os.remove(old_path)
+
         state = {'network':self.neural_network.state_dict(), 'optim':self.optim.state_dict()}
         torch.save(state, filepath+'.pkl')
 
