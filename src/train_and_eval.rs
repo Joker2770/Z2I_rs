@@ -286,6 +286,21 @@ fn save_elo(ratings: &HashMap<i32, f64>) {
     }
 }
 
+/// 新候选权重继承父代(当前 best)权重的 Elo 评级作为起点。
+/// 候选由 best 的棋谱训练而来,能力下限即 best;若每次都从 ELO_INITIAL
+/// 重新起算,候选战胜 best 后评级反而可能低于 best 原有评级,导致 elo.txt
+/// 长期停滞不增长。使用覆盖写入:候选 id 可能复用被拒轮次的旧 id,
+/// 旧模型已被丢弃,其残留评级不应影响新模型。
+fn inherit_elo(new_weight: i32, parent_weight: i32) {
+    let mut ratings = load_elo();
+    let parent_rating = ratings
+        .get(&parent_weight)
+        .copied()
+        .unwrap_or(cfg::ELO_INITIAL);
+    ratings.insert(new_weight, parent_rating);
+    save_elo(&ratings);
+}
+
 /// 根据一场评估赛结果更新双方 Elo,返回日志描述
 fn update_elo(weight_a: i32, weight_b: i32, result: (u16, u16, u16)) -> String {
     let total = result.0 + result.1 + result.2;
@@ -400,6 +415,8 @@ async fn main() {
                 + " tie:"
                 + &result.2.to_string()
                 + "\n";
+            // 候选权重继承 best 的评级起点,保证世系评级随迭代单调累积
+            inherit_elo(current_weight, best_weight);
             let elo_info = update_elo(current_weight, best_weight, result);
             result_log_info.push_str(&elo_info);
             let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
@@ -439,10 +456,14 @@ async fn main() {
         }
     } else if args[1] == "eval_with_random" && args.len() == 3 {
         let mut current_weight_id = 0;
+        let mut best_weight_id = 0;
         if let Ok(content) = fs::read_to_string("current_and_best_weight.txt") {
             let mut iter = content.split_whitespace();
             if let Some(item) = iter.next() {
                 current_weight_id = item.parse().unwrap();
+            }
+            if let Some(item) = iter.next() {
+                best_weight_id = item.parse().unwrap();
             }
 
             let mut num_random_mcts_sim = 0;
@@ -476,6 +497,9 @@ async fn main() {
                 + " tie: "
                 + &result.2.to_string()
                 + "\n";
+            // 候选同样继承 best 评级,与 eval_with_winner 保持同一评级尺度;
+            // 随机基线(-1)作为固定强度锚点自然漂移
+            inherit_elo(current_weight_id, best_weight_id);
             let elo_info = update_elo(current_weight_id, -1, result);
             result_log_info.push_str(&elo_info);
             let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
