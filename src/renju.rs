@@ -139,6 +139,16 @@ impl RenjuJudge {
         v
     }
 
+    /// 统计经过 last_move 的"四"的数量。
+    ///
+    /// RIF:DOUBLE-FOUR = 落子同时形成多于一个四(彼此交于落点)。
+    /// 关键:共享同一补点的两个四只算一个四——白棋下一步落在该补点即可
+    /// 同时封堵所有成五路线(如 xxxx_x 的 {0,1,2,3} 与 {1,2,3,5} 补点同为 4;
+    /// xxx_xx 的两个间四补点同为 3),因此不构成四四,属合法着法。
+    /// 仅当存在补点不同的两个四(如 x_xxx_x 补点 5/9)时才是四四禁手。
+    ///
+    /// i_flag 组合逻辑正是按此设计:活四两个补点(同一石子集合)只计 1;
+    /// 补点相同的多个四在窗口匹配中产生的 flag 组合不会落入"计 2"分支。
     fn count_a4(board: &Board, last_move: i16, p_drt: (isize, isize)) -> i32 {
         let v = Self::collect_line_colors(board, last_move, p_drt, 4);
         if v.len() < 5 {
@@ -754,6 +764,230 @@ mod tests {
         assert!(judge.is_double_three(&board, idx(7, 5) as i16));
         assert!(!judge.is_legal(&board, idx(7, 5) as i16));
         assert_eq!(judge.get_renju_state(), Pattern::DoubleThree);
+    }
+
+    #[test]
+    fn contiguous_plus_gapped_four_sharing_point_is_legal() {
+        // xxxx_x(cur 补成连四):{0,1,2,3} 与 {1,2,3,5} 的补点同为 4,
+        // 白棋下一步落在 4 即可同时封堵两条成五路线 → 只算一个四 → 合法
+        let stones = vec![
+            (idx(7, 0), Color::Black),
+            (idx(7, 1), Color::Black),
+            (idx(7, 3), Color::Black),
+            (idx(7, 5), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][2] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_four(&board, idx(7, 2) as i16));
+        assert!(judge.is_legal(&board, idx(7, 2) as i16));
+    }
+
+    #[test]
+    fn two_gapped_fours_sharing_point_is_legal() {
+        // xxx_xx(cur 在第 3 子):间四 {0,1,2,4} 与 {1,2,4,5} 共享补点 3,
+        // 白棋落在 3 即可同时封堵 → 只算一个四 → 合法
+        let stones = vec![
+            (idx(7, 0), Color::Black),
+            (idx(7, 1), Color::Black),
+            (idx(7, 4), Color::Black),
+            (idx(7, 5), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][2] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_four(&board, idx(7, 2) as i16));
+        assert!(judge.is_legal(&board, idx(7, 2) as i16));
+    }
+
+    #[test]
+    fn two_fours_with_different_points_is_forbidden() {
+        // xx.xxx.xx(cur 在 4):间四 {0,1,3,4} 补点 2、间四 {3,4,5,7} 补点 6,
+        // 白棋无法同时封堵两个补点 → 四四禁手
+        let stones = vec![
+            (idx(7, 0), Color::Black),
+            (idx(7, 1), Color::Black),
+            (idx(7, 3), Color::Black),
+            (idx(7, 5), Color::Black),
+            (idx(7, 7), Color::Black),
+            (idx(7, 8), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[7][4] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_four(&board, idx(7, 4) as i16));
+        assert!(!judge.is_legal(&board, idx(7, 4) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleFour);
+    }
+
+    // --- 棋盘角落/边缘特殊情况 ---
+
+    #[test]
+    fn corner_diagonal_black_five_wins() {
+        // (0,0)..(4,4) 主对角线,落点在角落端点:正向越界,反向数到 4 → 黑胜
+        let stones = vec![
+            (idx(1, 1), Color::Black),
+            (idx(2, 2), Color::Black),
+            (idx(3, 3), Color::Black),
+            (idx(4, 4), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][0] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(0, 0) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::FiveInARow);
+    }
+
+    #[test]
+    fn top_edge_black_five_wins() {
+        // 顶边 cols 0..4 水平五连,落点在中间 → 黑胜
+        let stones = vec![
+            (idx(0, 0), Color::Black),
+            (idx(0, 1), Color::Black),
+            (idx(0, 3), Color::Black),
+            (idx(0, 4), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][2] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(0, 2) as i16));
+    }
+
+    #[test]
+    fn top_edge_black_six_is_overline() {
+        // 顶边 cols 0..5 黑六连 → 长连禁手(边缘一侧计数到 5 上限)
+        let stones = vec![
+            (idx(0, 0), Color::Black),
+            (idx(0, 1), Color::Black),
+            (idx(0, 2), Color::Black),
+            (idx(0, 4), Color::Black),
+            (idx(0, 5), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][3] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_legal(&board, idx(0, 3) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::Overline);
+    }
+
+    #[test]
+    fn bottom_edge_white_overline_wins() {
+        // 底边 cols 9..14 白六连 → 白长连也算获胜
+        let stones = vec![
+            (idx(14, 9), Color::White),
+            (idx(14, 10), Color::White),
+            (idx(14, 12), Color::White),
+            (idx(14, 13), Color::White),
+            (idx(14, 14), Color::White),
+        ];
+        let mut board = board_with(&stones);
+        board[14][11] = Color::White;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(14, 11) as i16));
+    }
+
+    #[test]
+    fn left_edge_white_five_wins() {
+        // 左边 col 0 竖五连白 → 白胜
+        let stones = vec![
+            (idx(0, 0), Color::White),
+            (idx(1, 0), Color::White),
+            (idx(3, 0), Color::White),
+            (idx(4, 0), Color::White),
+        ];
+        let mut board = board_with(&stones);
+        board[2][0] = Color::White;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.check_win(&board, idx(2, 0) as i16));
+    }
+
+    #[test]
+    fn corner_double_four_is_forbidden() {
+        // (0,0) 落子:横向四 {(0,0)..(0,3)} 补点 (0,4)、纵向四 {(0,0)..(3,0)} 补点 (4,0),
+        // 补点不同 → 四四禁手。覆盖角落落子"前向越界、仅反向收集"的路径
+        let stones = vec![
+            (idx(0, 1), Color::Black),
+            (idx(0, 2), Color::Black),
+            (idx(0, 3), Color::Black),
+            (idx(1, 0), Color::Black),
+            (idx(2, 0), Color::Black),
+            (idx(3, 0), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][0] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_four(&board, idx(0, 0) as i16));
+        assert!(!judge.is_legal(&board, idx(0, 0) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleFour);
+    }
+
+    #[test]
+    fn bottom_right_corner_double_four_is_forbidden() {
+        // (14,14) 落子:横向四 {(14,11)..(14,14)} 补点 (14,10)、纵向四 {(11,14)..(14,14)}
+        // 补点 (10,14) → 四四禁手。覆盖右下角"反向越界、仅前向收集"的路径
+        let stones = vec![
+            (idx(14, 11), Color::Black),
+            (idx(14, 12), Color::Black),
+            (idx(14, 13), Color::Black),
+            (idx(11, 14), Color::Black),
+            (idx(12, 14), Color::Black),
+            (idx(13, 14), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[14][14] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_four(&board, idx(14, 14) as i16));
+        assert!(!judge.is_legal(&board, idx(14, 14) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleFour);
+    }
+
+    #[test]
+    fn corner_single_four_is_legal() {
+        // (0,0) 落子仅横向一个冲四 → 合法
+        let stones = vec![
+            (idx(0, 1), Color::Black),
+            (idx(0, 2), Color::Black),
+            (idx(0, 3), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][0] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_four(&board, idx(0, 0) as i16));
+        assert!(judge.is_legal(&board, idx(0, 0) as i16));
+    }
+
+    #[test]
+    fn top_edge_straight_four_is_legal() {
+        // 顶边 cols 1..4 活四,补点 (0,0) 与 (0,5) 均在盘内 → 单个活四合法;
+        // 覆盖边缘收集不足 4 格时窗口起点裁剪(s ∈ [cur_pos-4, cur_pos])的路径
+        let stones = vec![
+            (idx(0, 1), Color::Black),
+            (idx(0, 3), Color::Black),
+            (idx(0, 4), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[0][2] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_four(&board, idx(0, 2) as i16));
+        assert!(judge.is_legal(&board, idx(0, 2) as i16));
+    }
+
+    #[test]
+    fn bottom_edge_dead_three_is_not_double_three() {
+        // (14,13) 落子:横向 {11,12,13} 补点 (14,10) 可成活四 → 活三;
+        // 纵向 {12,13,14} 补点 (11,13) 成四后仅剩 (10,13) 单补点(另一端出界) → 死三,
+        // 不构成双三 → 合法。覆盖 count_a3 边缘收集窗口
+        let stones = vec![
+            (idx(14, 11), Color::Black),
+            (idx(14, 12), Color::Black),
+            (idx(12, 13), Color::Black),
+            (idx(13, 13), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[14][13] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_three(&board, idx(14, 13) as i16));
+        assert!(judge.is_legal(&board, idx(14, 13) as i16));
     }
 
     #[test]
