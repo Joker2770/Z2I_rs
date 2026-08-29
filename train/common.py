@@ -32,7 +32,9 @@ config = {
     'update_threshold': 0.55,                   # update model threshold
     'num_contest': 10,                          # new/old model compare times
     'check_freq': 20,                           # test model frequency
-    'examples_buffer_max_len': 20,              # max length of examples buffer
+    'examples_buffer_max_len': 20,              # 回放窗口(轮数):训练时使用最近 N 轮自对弈数据
+    'games_per_iter': 16,                       # 每轮自对弈局数,须与 src/configuration.rs 的 NUM_2_SELF_PLAY
+                                                # 及 train/train_loop.sh 的 STEP 保持一致
 
     # test
     'human_color': 1                            # human player's color

@@ -18,6 +18,47 @@ REPO_ROOT = path.dirname(path.dirname(path.abspath(__file__)))
 BUILD_DIR = os.environ.get('BUILD_DIR') or path.join(REPO_ROOT, 'build')
 
 
+def parse_batch_id(file_name):
+    """从数据文件名 `data_{batch_id}_{hex}` 解析 batch_id
+       解析失败返回 None
+    """
+    parts = path.basename(file_name).split('_')
+    if len(parts) >= 3 and parts[0] == 'data':
+        try:
+            return int(parts[1])
+        except ValueError:
+            return None
+    return None
+
+
+def select_replay_files(data_dir, backup_dir, window_files):
+    """从 data/ 与 data_backup/ 收集数据文件,按 (mtime, batch_id) 双键降序
+       取最新 window_files 个作为回放窗口
+       返回 (selected, obsolete) 两个文件路径列表
+    """
+    candidates = []
+    for folder in (data_dir, backup_dir):
+        if not path.isdir(folder):
+            continue
+        for file_name in os.listdir(folder):
+            file_path = path.join(folder, file_name)
+            if not path.isfile(file_path):
+                continue
+            try:
+                mtime = os.path.getmtime(file_path)
+            except OSError:
+                mtime = 0.0
+            candidates.append((mtime, parse_batch_id(file_name), file_path))
+    # mtime 主键、batch_id 次级键降序;id 解析失败按最小处理
+    candidates.sort(
+        key=lambda item: (item[0], item[1] if item[1] is not None else -1),
+        reverse=True,
+    )
+    selected = [item[2] for item in candidates[:window_files]]
+    obsolete = [item[2] for item in candidates[window_files:]]
+    return selected, obsolete
+
+
 class Learner():
     def __init__(self, config):
         # gomoku
@@ -83,8 +124,16 @@ class Learner():
         #     # self.nnet.save_model()
         #     self.nnet.save_model(model_path)
 
+        # 回放窗口:合并 data/ 与 data_backup/ 中最近 N 轮数据一起训练(AlphaZero 回放)
         data_path = path.join(BUILD_DIR, 'data')
-        train_data = self.load_samples(data_path)
+        data_backup_path = path.join(path.dirname(data_path), 'data_backup')
+        data_archive_path = path.join(path.dirname(data_path), 'data_archive')
+        window_files = config['examples_buffer_max_len'] * config['games_per_iter']
+        replay_files, _ = select_replay_files(data_path, data_backup_path, window_files)
+        print(f"replay window: {config['examples_buffer_max_len']} iters x "
+              f"{config['games_per_iter']} games = {window_files} files, "
+              f"selected {len(replay_files)}")
+        train_data = self.load_samples(replay_files)
         random.shuffle(train_data)
 
         # train neural network
@@ -97,11 +146,14 @@ class Learner():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 每轮只使用最新一代自对弈数据,训练后将 data 目录中的文件
-        # 移动到同级 data_backup 目录归档,避免旧策略数据参与下一轮训练
-        data_backup_path = path.join(path.dirname(data_path), 'data_backup')
+        # 训练后归档:data/ 中新生成文件移入 data_backup/ 供后续轮回放;
+        # 再对 data_backup/ 全量按回放窗口过滤,超窗历史文件移入 data_archive/ 保留
         try:
             mkdir(data_backup_path)
+        except FileExistsError:
+            pass
+        try:
+            mkdir(data_archive_path)
         except FileExistsError:
             pass
         for file_name in os.listdir(data_path):
@@ -111,6 +163,14 @@ class Learner():
             except OSError:
                 pass
         print(f"moved training data to: {data_backup_path}")
+        _, obsolete_files = select_replay_files(data_path, data_backup_path, window_files)
+        for file_path in obsolete_files:
+            try:
+                os.rename(file_path,
+                          path.join(data_archive_path, path.basename(file_path)))
+            except OSError as error:
+                print(f"skip archiving {file_path}: {error}")
+        print(f"archived {len(obsolete_files)} files beyond replay window to: {data_archive_path}")
 
     def get_symmetries(self, board, pi, last_action):
         # mirror, rotational
@@ -134,17 +194,16 @@ class Learner():
                 l += [(newB, newPi.ravel(), np.argmax(newAction) if last_action != -1 else -1)]
         return l
 
-    def load_samples(self, folder):
+    def load_samples(self, files):
         """load self.examples_buffer
+           files: 数据文件路径列表(由回放窗口选择)
         """
         BOARD_SIZE = self.n
         N2 = BOARD_SIZE * BOARD_SIZE
         # 单个样本的字节数: board(N2 个 i32) + prob(N2 个 f32) + v/color/last_action(3 个 i32)
         bytes_per_step = N2 * 4 + N2 * 4 + 3 * 4
         train_examples = []
-        data_files = os.listdir(folder)
-        for file_name in data_files:
-            file_path = path.join(folder, file_name)
+        for file_path in files:
             if not path.isfile(file_path):
                 continue
             try:
@@ -176,7 +235,7 @@ class Learner():
             except (ValueError, OSError) as error:
                 print(f"skip corrupted data file {file_path}: {error}")
                 continue
-        print(f"loaded {len(train_examples)} samples from {folder}")
+        print(f"loaded {len(train_examples)} samples from {len(files)} files")
         return train_examples
 
 
