@@ -213,13 +213,6 @@ Or build in destructive mode (not recommended for release):
 snapcraft pack --destructive-mode
 ```
 
-Publish:
-
-```bash
-snapcraft login
-snapcraft upload --release=edge z2i-rs_*.snap
-```
-
 ## Development checks
 
 ```bash
