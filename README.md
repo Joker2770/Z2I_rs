@@ -2,6 +2,7 @@
 
 [![Rust](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml)
 [![Snap](https://github.com/Joker2770/Z2I_rs/actions/workflows/snap.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/snap.yml)
+[![z2i-rs](https://snapcraft.io/z2i-rs/badge.svg)](https://snapcraft.io/z2i-rs)
 
 A Rust rewrite of Z2I. Z2I is a Gomoku/Renju AI based on a neural network and Monte Carlo Tree Search (MCTS); this project integrates board rules, MCTS, ONNX Runtime inference and the Gomocup/Piskvork engine protocol into a single Rust console program.
 
