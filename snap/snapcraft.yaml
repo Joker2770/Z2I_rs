@@ -63,6 +63,7 @@ parts:
       - build-essential
       - ca-certificates
       - curl
+      - libssl-dev          # openssl-sys (native-tls, used by ort download)
       - pkg-config
 
 
