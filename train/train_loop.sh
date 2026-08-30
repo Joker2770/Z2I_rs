@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-# 自动化训练流水线:generate -> 训练 -> 验收评估,循环执行
+# Automated training pipeline: generate -> train -> acceptance evaluation, looped
 #
-# 流程(AlphaZero 风格):
-#   1. generate:用已通过验收的 best 权重自对弈生成数据
-#   2. learner.py:训练得到候选权重 current+1
-#   3. eval_with_winner:候选 vs best,胜率(和棋计 0.5)> UPDATE_THRESHOLD 则 best 更新,
-#      否则回退 current=best,下一轮从 best 重新训练
-#   4. 每场评估赛后按标准 Elo 公式更新双方评级,持久化到 elo.txt 并写入 eval_result.log
+# Flow (AlphaZero style):
+#   1. generate: self-play with the accepted best weight to produce data
+#   2. learner.py: train to produce candidate weight current+1
+#   3. eval_with_winner: candidate vs best; if win rate (draws count as 0.5) > UPDATE_THRESHOLD, best is updated,
+#      otherwise current reverts to best and the next round retrains from best
+#   4. After each evaluation match, both ratings are updated with the standard Elo formula,
+#      persisted to elo.txt and appended to eval_result.log
 #
-# 环境变量:
-#   WORK_DIR    训练工作目录(含 train_and_eval 二进制与 data/weights),默认 build
-#   BIN         train_and_eval 二进制路径,默认 ./train_and_eval
-#   NUM_CONTEST 验收评估局数,默认 20
-#   BATCH_ID    起始批次 id,默认 0
-#   MAX_ITERS   最大迭代轮数,默认 1000
-#   PYTHON      python 解释器,默认 python3
+# Environment variables:
+#   WORK_DIR     training work dir (contains the train_and_eval binary and data/weights), default build
+#   BIN          train_and_eval binary path, default ./train_and_eval
+#   NUM_CONTEST  acceptance evaluation game count, default 20
+#   BATCH_ID     starting batch id, default 0
+#   MAX_ITERS    max iterations, default 1000
+#   PYTHON       python interpreter, default python3
 set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-build}"
@@ -23,17 +24,19 @@ NUM_CONTEST="${NUM_CONTEST:-10}"
 BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
-# Colab 上使用 load-dynamic 的 CUDA 版 onnxruntime 时,取消注释并指向 libonnxruntime.so
+# When using the load-dynamic CUDA onnxruntime on Colab, uncomment and point to libonnxruntime.so
 # export ORT_LIB_LOCATION=/path/to/libonnxruntime.so
-# 每 CHECK_FREQ 轮做一次验收评估(1=每轮评估);中间轮跳过评估、直接接纳候选
-# Colab T4 会话有时限,默认隔轮评估以缩短单轮耗时
+# Run acceptance evaluation every CHECK_FREQ rounds (1 = every round); rounds in between skip
+# evaluation and accept the candidate directly
+# Colab T4 sessions are time-limited; evaluate every other round by default to shorten each round
 CHECK_FREQ="${CHECK_FREQ:-2}"
-# 每轮生成 NUM_2_SELF_PLAY 局(src/configuration.rs,当前 16),批次 id 步进与之保持一致
+# Each round generates NUM_2_SELF_PLAY games (src/configuration.rs, currently 16);
+# keep the batch id step in sync with it
 STEP="${STEP:-16}"
 
 cd "$WORK_DIR"
 
-# learner.py 使用的训练工作目录绝对路径(未设置时取当前目录),与 WORK_DIR 对齐
+# absolute training work dir used by learner.py (current dir if unset), aligned with WORK_DIR
 BUILD_DIR="${BUILD_DIR:-$PWD}"
 export BUILD_DIR
 

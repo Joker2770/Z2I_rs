@@ -79,8 +79,9 @@ impl SelfPlay {
                 }
                 let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
                 let board = game_ref.borrow().get_board().clone();
-                // 训练目标保存加噪前的干净 π(搜索改善后的策略);
-                // Dirichlet 噪声只用于选子、不注入训练目标(与 AlphaGo Zero 及 junxiaosong 参考一致)
+                // the training target stores the clean π before noise (the search-improved policy);
+                // Dirichlet noise only affects move selection and is not injected into the training
+                // target (consistent with AlphaGo Zero and the junxiaosong reference)
                 for (i, p) in action_probs.iter().enumerate() {
                     p_buffer[step as usize][i] = *p;
                 }
@@ -107,7 +108,7 @@ impl SelfPlay {
 
                 let lm = game_ref.borrow().get_legal_moves().to_vec();
                 hasher.update(&lm);
-                // AlphaZero 探索噪声:在合法着法上叠加 Dirichlet 噪声
+                // AlphaZero exploration noise: add Dirichlet noise on legal moves
                 // η ~ Dir(α),π = (1 - ε)·p + ε·η(ε = cfg::DIRI,α = cfg::DIRICHLET_ALPHA)
                 let legal_count = lm
                     .iter()
@@ -131,8 +132,8 @@ impl SelfPlay {
                 let rst = mcts.get_action_by_sample(&action_probs);
                 mcts.update_root_with_action(&game_ref.borrow(), rst);
                 if !game_ref.borrow_mut().execute_move(rst) {
-                    // 防御:落子失败退出前也更新一次终局状态,
-                    // 避免后续 win_col_2_i 基于未更新的旧状态计算
+                    // defensive: refresh the terminal status before bailing out of a failed move,
+                    // so the later win_col_2_i is not computed from a stale status
                     game_status = {
                         let mut game = game_ref.borrow_mut();
                         *game.get_game_status()
@@ -177,7 +178,8 @@ impl SelfPlay {
                 .map(fs::create_dir_all)
                 .transpose()
                 .expect("Unable to create dirs");
-            // 先写临时文件,全部写完后原子重命名,避免训练侧读到写了一半的数据文件
+            // write to a temp file first and rename atomically after finishing,
+            // so the training side never reads a half-written data file
             let tmp_path = new_path.with_extension("part");
             let mut file = fs::File::create(&tmp_path).expect("Unable to create file");
             _ = file.write_all(&(step as i32).to_ne_bytes());

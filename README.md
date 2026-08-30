@@ -2,32 +2,32 @@
 
 [![Rust](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml)
 
-Z2I 的 Rust 重写版本。Z2I 是一个基于神经网络和 Monte Carlo Tree Search（MCTS）的 Gomoku/Renju AI；本项目将棋盘规则、MCTS、ONNX Runtime 推理和 Gomocup/Piskvork 引擎协议整合为一个 Rust 控制台程序。
+A Rust rewrite of Z2I. Z2I is a Gomoku/Renju AI based on a neural network and Monte Carlo Tree Search (MCTS); this project integrates board rules, MCTS, ONNX Runtime inference and the Gomocup/Piskvork engine protocol into a single Rust console program.
 
-本项目适合与 [qpiskvork](https://github.com/Joker2770/qpiskvork) 这类 Gomoku manager 配合使用：manager 负责启动引擎、发送棋局命令和管理对局，`pbrain-Z2I_rs` 负责通过标准输入输出计算并返回落子。
+This project works well with Gomoku managers such as [qpiskvork](https://github.com/Joker2770/qpiskvork): the manager starts the engine, sends game commands and manages games, while `pbrain-Z2I_rs` computes and returns moves through standard input/output.
 
-相关项目：
+Related projects:
 
-- [Joker2770/Z2I](https://github.com/Joker2770/Z2I)：原始 Z2I 项目。
-- [Joker2770/qpiskvork](https://github.com/Joker2770/qpiskvork)：Gomoku manager，可用于人机对战、引擎对战和棋局管理。
+- [Joker2770/Z2I](https://github.com/Joker2770/Z2I): the original Z2I project.
+- [Joker2770/qpiskvork](https://github.com/Joker2770/qpiskvork): Gomoku manager for human-vs-engine play, engine-vs-engine matches and game management.
 
-## 功能
+## Features
 
-- MCTS 搜索结合 ONNX 神经网络策略和值函数。
-- ONNX Runtime 推理支持批处理和后台推理 worker。
-- CPU 构建默认可用；CUDA 作为可选 Cargo feature。
-- 支持 FreeStyle、Standard、Renju、Caro 及 Standard+Caro 规则标志。
-- 实现 Gomocup/Piskvork 风格的控制台协议：`START`、`BEGIN`、`TURN`、`BOARD`、`INFO`、`ABOUT`、`END`。
-- 支持通过 `config.toml` 配置模型路径和 MCTS 模拟次数。
-- 包含自对弈数据生成、模型评估和随机 MCTS 对手评估程序。
+- MCTS search combined with ONNX neural network policy and value functions.
+- ONNX Runtime inference with batching and a background inference worker.
+- CPU build available by default; CUDA as an optional Cargo feature.
+- Supports FreeStyle, Standard, Renju, Caro and Standard+Caro rule flags.
+- Implements the Gomocup/Piskvork-style console protocol: `START`, `BEGIN`, `TURN`, `BOARD`, `INFO`, `ABOUT`, `END`.
+- Model path and MCTS simulation count configurable via `config.toml`.
+- Includes programs for self-play data generation, model evaluation and evaluation against a random MCTS opponent.
 
-## 构建
+## Building
 
-需要 Rust stable toolchain 和 Cargo。
+Requires the Rust stable toolchain and Cargo.
 
 ### CPU
 
-CPU 是默认构建方式：
+CPU is the default build:
 
 ```bash
 cargo build --release --bin pbrain-Z2I_rs
@@ -35,25 +35,25 @@ cargo build --release --bin pbrain-Z2I_rs
 
 ### CUDA
 
-编译 CUDA provider 支持：
+Build with CUDA provider support:
 
 ```bash
 cargo build --release --features cuda --bin pbrain-Z2I_rs
 ```
 
-CUDA 运行还需要主机安装与 ONNX Runtime/CUDA provider 匹配的 CUDA 和相关运行库。没有 GPU 的主机请使用默认 CPU 构建。
+CUDA builds also require the host to have CUDA and related runtime libraries matching the ONNX Runtime/CUDA provider. Hosts without a GPU should use the default CPU build.
 
-## 模型与配置
+## Model & configuration
 
-程序按以下优先级查找 `config.toml`,使用第一个存在的文件:
+The program searches for `config.toml` in the following order and uses the first one found:
 
-1. 用户配置目录:Linux `$XDG_CONFIG_HOME/Z2I_rs/`(未设置时为 `~/.config/Z2I_rs/`)、macOS `~/Library/Application Support/Z2I_rs/`、Windows `%APPDATA%\Z2I_rs\`;
-2. 当前工作目录;
-3. 可执行文件所在目录。
+1. User config dir: Linux `$XDG_CONFIG_HOME/Z2I_rs/` (falling back to `~/.config/Z2I_rs/` when unset), macOS `~/Library/Application Support/Z2I_rs/`, Windows `%APPDATA%\Z2I_rs\`;
+2. current working directory;
+3. directory of the executable.
 
-均不存在时使用源码中的默认模型路径和 MCTS 参数。放在用户目录中的配置建议将模型路径写成绝对路径(相对路径仍按当前工作目录/可执行文件目录解析)。
+When none exists, the default model path and MCTS parameters in the source are used. For configs placed in the user directory it is recommended to write the model path as absolute (relative paths are still resolved against the current working dir / executable dir).
 
-示例：
+Example:
 
 ```toml
 [model]
@@ -78,29 +78,29 @@ enable_ponder = true
 num_intra_thread = 4
 ```
 
-模型文件必须放在配置指定的位置。当前 `NeuralNetwork` 的输入张量固定为 `3x15x15`，仓库中的 ONNX 模型也按 15x15 棋盘导出；如需支持其他尺寸，需要同时修改模型输入、张量转换和棋盘配置。
+Model files must be placed where the config specifies. The `NeuralNetwork` input tensor is currently fixed at `3x15x15`, and the ONNX models in the repo are exported for a 15x15 board; supporting other sizes requires changing the model input, the tensor conversion and the board configuration together.
 
-### Provider 选择
+### Provider selection
 
-当前 provider 初始化由 Cargo feature 控制：默认使用 CPU；使用 CUDA 构建时可在 `src/ortcommon.rs` 中启用 CUDA provider。若部署到 CPU-only 主机，直接使用不带 `--features cuda` 的构建即可。
+Provider initialization is currently controlled by Cargo features: CPU by default; with a CUDA build you can enable the CUDA provider in `src/ortcommon.rs`. For CPU-only hosts, simply use the build without `--features cuda`.
 
-## 与 qpiskvork 配合使用
+## Using with qpiskvork
 
-`qpiskvork` 作为 manager 时，应将编译出的引擎配置为：
+When `qpiskvork` acts as the manager, configure the built engine as:
 
 ```text
 pbrain-Z2I_rs
 ```
 
-程序是控制台进程，通过 stdin 接收命令，通过 stdout 输出响应。建议使用绝对路径配置引擎和模型文件，因为 manager 可能会修改引擎的工作目录。
+The program is a console process: it receives commands on stdin and writes responses to stdout. Use absolute paths for the engine and model files, since the manager may change the engine's working directory.
 
-示例启动：
+Example launch:
 
 ```bash
 ./target/release/pbrain-Z2I_rs
 ```
 
-手工测试协议：
+Manual protocol test:
 
 ```text
 START 15
@@ -109,44 +109,44 @@ TURN 7,7
 END
 ```
 
-正常情况下，`START` 返回 `OK`，`BEGIN` 和 `TURN` 返回 `x,y` 格式的落子坐标。
+Normally `START` replies `OK`, and `BEGIN`/`TURN` reply a move coordinate in `x,y` format.
 
-## 支持的协议命令
+## Supported protocol commands
 
-| 命令 | 作用 |
+| Command | Meaning |
 | --- | --- |
-| `START size` | 创建指定尺寸的棋盘并初始化引擎。 |
-| `BEGIN` | AI 先手时请求第一步。 |
-| `TURN x,y` | 告知对手落子，并请求 AI 落子。 |
-| `BOARD` | 开始发送完整棋盘；以 `DONE` 结束后请求 AI 落子。 |
-| `INFO rule value` | 设置规则标志。 |
-| `ABOUT` | 返回引擎名称和版本。 |
-| `END` | 结束进程。 |
+| `START size` | Create a board of the given size and initialize the engine. |
+| `BEGIN` | Request the first move when the AI plays first. |
+| `TURN x,y` | Inform the opponent's move and request the AI's move. |
+| `BOARD` | Start receiving the full board; after `DONE`, request the AI's move. |
+| `INFO rule value` | Set the rule flag. |
+| `ABOUT` | Return the engine name and version. |
+| `END` | End the process. |
 
-协议细节参见仓库中的 [Gomoku AI protocol.html](Gomoku%20AI%20protocol.html)。该协议要求引擎及时刷新 stdout；本项目在处理命令后会刷新输出。
+Protocol details are in [Gomoku AI protocol.html](Gomoku%20AI%20protocol.html). The protocol requires the engine to flush stdout promptly; this project flushes output after processing a command.
 
-## 规则标志
+## Rule flags
 
-`INFO rule value` 使用 bitflags 数值：
+`INFO rule value` uses bitflag values:
 
-| 规则 | 值 |
+| Rule | Value |
 | --- | ---: |
 | FreeStyle | `0` |
 | Standard | `1` |
 | Renju | `4` |
 | Caro | `8` |
 
-例如：
+For example:
 
 ```text
 INFO rule 4
 ```
 
-表示使用 Renju 规则。规则标志的组合由 Rust 端解析。
+selects the Renju rule. Rule flag combinations are parsed by the Rust side.
 
-## 训练与评估
+## Training & evaluation
 
-训练/评估使用单独的 `train_and_eval` 二进制：
+Training/evaluation uses the separate `train_and_eval` binary:
 
 ```bash
 cargo run --release --bin train_and_eval -- prepare
@@ -155,24 +155,24 @@ cargo run --release --bin train_and_eval -- eval_with_winner 10
 cargo run --release --bin train_and_eval -- eval_with_random 10
 ```
 
-命令说明：
+Command descriptions:
 
-- `prepare`：创建 `data/`、`weights/` 和权重状态文件。
-- `generate <batch_id>`：加载当前权重并生成自对弈训练数据。
-- `eval_with_winner <games>`：评估当前权重与最佳权重。
-- `eval_with_random <games>`：评估当前权重与无神经网络的随机 MCTS 对手。
+- `prepare`: create `data/`, `weights/` and the weight state file.
+- `generate <batch_id>`: load the current weight and generate self-play training data.
+- `eval_with_winner <games>`: evaluate the current weight against the best weight.
+- `eval_with_random <games>`: evaluate the current weight against a random MCTS opponent without a neural network.
 
-Python 训练脚本位于 `train/`，依赖可通过以下命令安装：
+Python training scripts are in `train/`; install dependencies with:
 
 ```bash
 python3 -m pip install -r train/requirements.txt
 ```
 
-训练流程需要 Python 侧生成初始 ONNX 权重，然后 Rust 端才能进行带模型的自对弈和评估。
+The training flow needs the Python side to produce initial ONNX weights before the Rust side can run self-play and evaluation with a model.
 
 ### ORT Training
 
-Rust 训练入口需要 ONNX Runtime Training artifacts，而不是普通推理模型。artifact 目录必须包含：
+The Rust training entry needs ONNX Runtime Training artifacts, not ordinary inference models. The artifact directory must contain:
 
 ```text
 training_model.onnx
@@ -181,22 +181,22 @@ optimizer_model.onnx
 checkpoint
 ```
 
-生成 artifacts 后，可以使用 Rust 训练入口读取 `data/` 中的 Rust 自对弈数据：
+After generating the artifacts, the Rust training entry can read the Rust self-play data in `data/`:
 
 ```bash
 cargo run --features training --bin ort_train -- \
 	artifacts data weights/1.onnx artifacts/checkpoint.updated 128 1
 ```
 
-参数顺序为：`artifact_dir data_dir output_model checkpoint batch_size epochs`。默认训练输入名为 `board`、`target_p`、`target_v`；如果训练图使用其他名称，可继续传入三个名称参数。普通 `weights/*.onnx` 只支持推理，不能直接作为 ORT Training artifacts。
+Argument order: `artifact_dir data_dir output_model checkpoint batch_size epochs`. Default training input names are `board`, `target_p`, `target_v`; if the training graph uses other names, pass three more name arguments. Ordinary `weights/*.onnx` supports inference only and cannot be used directly as ORT Training artifacts.
 
-## 推理与吞吐量
+## Inference & throughput
 
-MCTS simulation 会将推理请求发送到后台 ONNX worker。worker 会在达到 `batch_size` 或短暂等待窗口结束后批量调用 `session.run()`，再按请求进入队列的 FIFO 顺序通过各自的 response channel 返回结果。
+Each MCTS simulation sends its inference request to the background ONNX worker. The worker batches `session.run()` calls once the batch reaches `batch_size` or the short wait window ends, then returns results in FIFO request order through each response channel.
 
-因此，增大 batch size 可能提高 GPU 吞吐量，但会增加单个请求的等待时间和显存占用。MCTS 模拟次数由 `num_mct_sims` 控制。
+Therefore, a larger batch size may improve GPU throughput, but increases the per-request latency and memory usage. The MCTS simulation count is controlled by `num_mct_sims`.
 
-## 开发检查
+## Development checks
 
 ```bash
 cargo fmt --all
@@ -206,4 +206,4 @@ cargo test --all-targets
 
 ## License
 
-本项目使用 MIT License，详见 [LICENSE](LICENSE)。
+This project uses the MIT License; see [LICENSE](LICENSE).

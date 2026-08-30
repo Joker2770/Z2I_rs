@@ -12,15 +12,15 @@ import random
 
 from neural_network import NeuralNetWorkWrapper
 
-# 训练工作目录:默认仓库根下的 build/,可用环境变量 BUILD_DIR 覆盖;
-# 基于脚本自身位置推导,不依赖运行时 cwd
+# training work dir: build/ under the repo root by default, overridable via BUILD_DIR;
+# derived from the script's own location, independent of the runtime cwd
 REPO_ROOT = path.dirname(path.dirname(path.abspath(__file__)))
 BUILD_DIR = os.environ.get('BUILD_DIR') or path.join(REPO_ROOT, 'build')
 
 
 def parse_batch_id(file_name):
-    """从数据文件名 `data_{batch_id}_{hex}` 解析 batch_id
-       解析失败返回 None
+    """Parse batch_id from a data file name `data_{batch_id}_{hex}`
+       returns None on failure
     """
     parts = path.basename(file_name).split('_')
     if len(parts) >= 3 and parts[0] == 'data':
@@ -32,9 +32,9 @@ def parse_batch_id(file_name):
 
 
 def select_replay_files(data_dir, backup_dir, window_files):
-    """从 data/ 与 data_backup/ 收集数据文件,按 (mtime, batch_id) 双键降序
-       取最新 window_files 个作为回放窗口
-       返回 (selected, obsolete) 两个文件路径列表
+    """Collect data files from data/ and data_backup/, sort by (mtime, batch_id)
+       descending, and take the newest window_files as the replay window
+       returns (selected, obsolete) file path lists
     """
     candidates = []
     for folder in (data_dir, backup_dir):
@@ -49,7 +49,7 @@ def select_replay_files(data_dir, backup_dir, window_files):
             except OSError:
                 mtime = 0.0
             candidates.append((mtime, parse_batch_id(file_name), file_path))
-    # mtime 主键、batch_id 次级键降序;id 解析失败按最小处理
+    # descending by mtime then batch_id; unparsable ids rank lowest
     candidates.sort(
         key=lambda item: (item[0], item[1] if item[1] is not None else -1),
         reverse=True,
@@ -101,7 +101,7 @@ class Learner():
         print(f"loading {model_id}-th model")
         self.nnet.load_model(model_path)
 
-        # 学习率按模型代际阶梯衰减
+        # learning rate decays in steps by model generation
         lr = config['lr']
         for milestone in config['lr_milestones']:
             if model_id >= milestone:
@@ -124,7 +124,8 @@ class Learner():
         #     # self.nnet.save_model()
         #     self.nnet.save_model(model_path)
 
-        # 回放窗口:合并 data/ 与 data_backup/ 中最近 N 轮数据一起训练(AlphaZero 回放)
+        # replay window: train on the most recent N iterations of data from data/ and
+        # data_backup/ combined (AlphaZero replay)
         data_path = path.join(BUILD_DIR, 'data')
         data_backup_path = path.join(path.dirname(data_path), 'data_backup')
         data_archive_path = path.join(path.dirname(data_path), 'data_archive')
@@ -146,8 +147,9 @@ class Learner():
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-        # 训练后归档:data/ 中新生成文件移入 data_backup/ 供后续轮回放;
-        # 再对 data_backup/ 全量按回放窗口过滤,超窗历史文件移入 data_archive/ 保留
+        # post-training archiving: move the newly generated files from data/ to data_backup/
+        # for later replay; then filter all of data_backup/ by the replay window, moving
+        # out-of-window history to data_archive/ for retention
         try:
             mkdir(data_backup_path)
         except FileExistsError:
@@ -196,11 +198,11 @@ class Learner():
 
     def load_samples(self, files):
         """load self.examples_buffer
-           files: 数据文件路径列表(由回放窗口选择)
+           files: data file path list (selected by the replay window)
         """
         BOARD_SIZE = self.n
         N2 = BOARD_SIZE * BOARD_SIZE
-        # 单个样本的字节数: board(N2 个 i32) + prob(N2 个 f32) + v/color/last_action(3 个 i32)
+        # bytes per sample: board (N2 i32) + prob (N2 f32) + v/color/last_action (3 i32)
         bytes_per_step = N2 * 4 + N2 * 4 + 3 * 4
         train_examples = []
         for file_path in files:
@@ -215,13 +217,14 @@ class Learner():
                 with open(file_path, 'rb') as binfile:
                     step = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
                     expected_size = 4 + step * bytes_per_step
-                    # 自对弈进程可能仍在写入,或上次运行中断留下半成品文件;
-                    # 大小不匹配的文件直接跳过,避免 reshape 抛 ValueError
+                    # the self-play process may still be writing, or a previous interrupted
+                    # run left a partial file; skip size-mismatched files to avoid ValueError
+                    # from reshape
                     if step <= 0 or file_size < expected_size:
                         print(f"skip incomplete data file {file_path}: "
                               f"step={step}, size={file_size}, expected={expected_size}")
                         continue
-                    # 批量读取,避免逐元素 Python 级 IO
+                    # bulk read to avoid element-wise Python-level IO
                     board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)
                     prob = np.frombuffer(binfile.read(step * N2 * 4), dtype='<f4').reshape(step, N2)
                     v = np.frombuffer(binfile.read(step * 4), dtype='<i4')

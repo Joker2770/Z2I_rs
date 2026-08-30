@@ -1,24 +1,27 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""模型结构转换:将现有网络调整为新的层数/通道数,并尽可能保留棋力。
+"""Model structure conversion: resize an existing network to new layer/channel counts
+while preserving its playing strength as much as possible.
 
-流程:
-1. 加载源模型 A(.pkl)
-2. 按目标层数/通道数创建网络 B
-3. 结构映射初始化 B:
-   - 通道扩宽:旧通道权重逐位复制,新增行/列/BN γ 用 1e-3 尺度小随机初始化,
-     前向输出与 A 几乎完全一致(扰动 ~1e-3),同时反向传播所有新参数都有梯度
-   - 通道缩窄:截取前 C_B 个通道(有误差,靠蒸馏恢复)
-   - 层数:复制前 min(K_A, K_B) 个残差块;新增块近似恒等初始化(conv ~ 0 扰动)
-   - 策略/价值头 FC 输入维度与主干通道数无关,原样复制
-4. 蒸馏:在回放数据上最小化 CE(soft π_A || π_B) + MSE(v_A, v_B)
-5. 保存 B 的 .pkl 与 .onnx(复用 NeuralNetWorkWrapper.save_model)
+Flow:
+1. Load the source model A (.pkl)
+2. Create network B with the target layer/channel counts
+3. Initialize B via structural mapping:
+   - widening channels: old channel weights copied element-wise; new rows/columns/BN gamma
+     initialized with tiny 1e-3-scale random values, so the forward output is almost identical
+     to A (perturbation ~1e-3) while all new parameters still receive gradients in backward
+   - narrowing channels: keep the first C_B channels (some error, recovered by distillation)
+   - layer count: copy the first min(K_A, K_B) residual blocks; added blocks are near-identity
+     initialized (conv ~ 0 perturbation)
+   - the policy/value head FC input dims don't depend on backbone channels, copied as-is
+4. Distill: minimize CE(soft pi_A || pi_B) + MSE(v_A, v_B) on replay data
+5. Save B's .pkl and .onnx (reusing NeuralNetWorkWrapper.save_model)
 
-用法示例(4x256 -> 4x128,蒸馏 1500 步):
+Usage example (4x256 -> 4x128, 1500 distill steps):
     python3 train/convert_model.py --src build/weights/1204 --dst build/weights/1205 \
         --layers 4 --channels 128 --steps 1500
 
-    python3 train/convert_model.py --self-test   # 仅跑结构映射自检,不读盘
+    python3 train/convert_model.py --self-test   # run only the structural mapping self-test, no disk access
 """
 
 import argparse
@@ -32,18 +35,20 @@ import torch
 from common import config
 from neural_network import NeuralNetWork, NeuralNetWorkWrapper
 
-# 与 learner.py 一致的训练工作目录推导
+# same training work dir derivation as learner.py
 REPO_ROOT = path.dirname(path.dirname(path.abspath(__file__)))
 BUILD_DIR = os.environ.get('BUILD_DIR') or path.join(REPO_ROOT, 'build')
 
-# 新增参数的扰动尺度(相对旧权重 std),前向近似恒等、反向保证梯度流动
+# perturbation scale of added parameters (relative to old weight std): near-identity
+# forward, gradient flow guaranteed in backward
 PERTURB = 1e-3
 
 
-# ---------------------------------------------------------------- 结构映射
+# ---------------------------------------------------------------- structural mapping
 
 def copy_conv(dst, src, perturb=PERTURB):
-    """卷积权重复制:重叠区域逐位复制;新增输出行/输入列用小随机扰动"""
+    """Copy conv weights: overlap region copied element-wise; new output rows/input cols
+       get tiny random perturbation"""
     with torch.no_grad():
         sw = src.weight
         dw = dst.weight
@@ -64,7 +69,8 @@ def copy_conv(dst, src, perturb=PERTURB):
 
 
 def copy_bn(dst, src, new_gamma=PERTURB):
-    """BN 复制:重叠通道复制全部统计量;新增通道 γ 取小值(输出 ~0 但有梯度)"""
+    """Copy BN: overlap channels copy all statistics; new channels get a small gamma
+       (output ~0 but with gradient)"""
     with torch.no_grad():
         c = min(dst.weight.shape[0], src.weight.shape[0])
         dst.weight.zero_()
@@ -81,7 +87,7 @@ def copy_bn(dst, src, new_gamma=PERTURB):
 
 
 def copy_fc(dst, src):
-    """全连接层原样复制(要求输入输出维度一致)"""
+    """Copy an FC layer as-is (requires matching input/output dims)"""
     with torch.no_grad():
         dst.weight.copy_(src.weight)
         if dst.bias is not None and src.bias is not None:
@@ -89,8 +95,8 @@ def copy_fc(dst, src):
 
 
 def init_identity(block, perturb=PERTURB):
-    """新增残差块近似恒等初始化:conv 小扰动,BN 默认参数;
-       输出 = relu(x + 微小量) ≈ x(x 为前一 relu 输出,非负)"""
+    """Near-identity init for an added residual block: small conv perturbation, default BN params;
+       output = relu(x + tiny) ≈ x (x is the previous relu output, non-negative)"""
     with torch.no_grad():
         block.conv1.weight.normal_(0.0, perturb)
         block.conv2.weight.normal_(0.0, perturb)
@@ -102,14 +108,14 @@ def init_identity(block, perturb=PERTURB):
 
 
 def map_model(src_net, dst_net, perturb=PERTURB):
-    """把源网络 A 的结构映射到目标网络 B 作为初始权重
-       要求:双方 n、action_size、input_channel 一致
+    """Map the source network A's structure onto target network B as initial weights
+       requires: same n, action_size and input_channel on both sides
     """
     src_blocks = src_net.res_layers
     dst_blocks = dst_net.res_layers
     shared = min(len(src_blocks), len(dst_blocks))
 
-    # 共享深度:逐残差块映射
+    # shared depth: map residual blocks one by one
     for i in range(shared):
         s, d = src_blocks[i], dst_blocks[i]
         copy_conv(d.conv1, s.conv1, perturb)
@@ -120,11 +126,12 @@ def map_model(src_net, dst_net, perturb=PERTURB):
             copy_conv(d.downsample_conv, s.downsample_conv, perturb)
             copy_bn(d.downsample_bn, s.downsample_bn)
 
-    # 新增深度:近似恒等残差块
+    # added depth: near-identity residual blocks
     for i in range(shared, len(dst_blocks)):
         init_identity(dst_blocks[i], perturb)
 
-    # 头:1x1 卷积按通道裁剪/扩宽,FC 原样复制(FC 输入与主干通道无关)
+    # heads: 1x1 convs narrowed/widened by channel, FCs copied as-is
+    # (FC inputs don't depend on backbone channels)
     copy_conv(dst_net.p_conv, src_net.p_conv, perturb)
     copy_bn(dst_net.p_bn, src_net.p_bn)
     copy_conv(dst_net.v_conv, src_net.v_conv, perturb)
@@ -137,11 +144,11 @@ def map_model(src_net, dst_net, perturb=PERTURB):
             f"{len(dst_blocks) - shared} blocks identity-init")
 
 
-# ---------------------------------------------------------------- 数据读取
+# ---------------------------------------------------------------- data reading
 
 def read_raw_features(file_path):
-    """从二进制数据文件读取 (board, color, last_action),跳过 prob 区
-       返回 None 表示文件不完整/损坏
+    """Read (board, color, last_action) from a binary data file, skipping the prob section
+       returns None if the file is incomplete/corrupt
     """
     n = config['n']
     N2 = n * n
@@ -166,7 +173,8 @@ def read_raw_features(file_path):
 
 
 def collect_candidates(dirs):
-    """收集目录列表中的 (mtime, batch_id, path),规则与 learner.select_replay_files 一致"""
+    """Collect (mtime, batch_id, path) from a list of dirs, same rules as
+       learner.select_replay_files"""
     from learner import parse_batch_id
     candidates = []
     for folder in dirs:
@@ -189,7 +197,7 @@ def collect_candidates(dirs):
 
 
 def load_feature_data(dirs, window_files):
-    """按 (mtime, id) 双键取最新 window_files 个文件,读出全部原始特征"""
+    """Take the newest window_files files by the (mtime, id) double key and read all raw features"""
     files = collect_candidates(dirs)[:window_files]
     boards, colors, lasts = [], [], []
     for file_path in files:
@@ -205,16 +213,16 @@ def load_feature_data(dirs, window_files):
     return (np.concatenate(boards), np.concatenate(colors), np.concatenate(lasts)), len(files)
 
 
-# ---------------------------------------------------------------- 蒸馏
+# ---------------------------------------------------------------- distillation
 
 def state_of(wrapper, boards, colors, lasts, idx):
-    """按索引构造特征并转成网络输入 tensor"""
+    """Build features by index and convert them to the network input tensor"""
     feats = [(boards[i], lasts[i], colors[i]) for i in idx]
     return wrapper._data_convert(*zip(*feats))
 
 
 def evaluate_pair(a_net, b_net, wrapper_a, boards, colors, lasts, batch=1024):
-    """统计 B 相对 A 的平均 KL(p_A||p_B)、|Δv| 与 policy top-1 一致率"""
+    """Report B's mean KL(p_A||p_B), |dv| and policy top-1 agreement relative to A"""
     n_data = len(boards)
     total_kl, total_dv, total_top1, cnt = 0.0, 0.0, 0, 0
     a_net.eval()
@@ -235,7 +243,7 @@ def evaluate_pair(a_net, b_net, wrapper_a, boards, colors, lasts, batch=1024):
 
 def distill(wrapper_a, wrapper_b, boards, colors, lasts,
             steps, batch_size, print_every=50):
-    """让 B 拟合 A 的 soft π 与 v(带放回采样,AlphaZero 风格)"""
+    """Fit B to A's soft pi and v (sampling with replacement, AlphaZero style)"""
     a_net = wrapper_a.neural_network
     b_net = wrapper_b.neural_network
     a_net.eval()
@@ -269,18 +277,18 @@ def distill(wrapper_a, wrapper_b, boards, colors, lasts,
                   f"top1={top1:.4f}")
 
 
-# ---------------------------------------------------------------- 自检
+# ---------------------------------------------------------------- self-test
 
 def self_test():
-    """结构映射正确性自检:扩宽+加层后前向输出与源网络几乎一致;
-       缩窄后网络可正常前向"""
+    """Self-test of structural mapping: after widening+deepening the forward output matches
+       the source almost exactly; after narrowing the network still forwards normally"""
     torch.manual_seed(0)
     n, action = 15, 225
 
     src = NeuralNetWork(3, 64, n, action, 3)
     src.eval()
 
-    # 场景 1:扩宽 + 加层 → 输出应与源几乎一致
+    # scenario 1: widen + deepen -> output should almost match the source
     dst = NeuralNetWork(5, 96, n, action, 3)
     print(map_model(src, dst))
     dst.eval()
@@ -295,7 +303,7 @@ def self_test():
     assert kl < 0.05, f"KL too large: {kl}"
     assert dv < 0.1, f"|dv| too large: {dv}"
 
-    # 场景 2:缩窄 → 前向可运行且有限
+    # scenario 2: narrow -> forward runs and stays finite
     dst2 = NeuralNetWork(3, 32, n, action, 3)
     print(map_model(src, dst2))
     dst2.eval()
@@ -304,7 +312,7 @@ def self_test():
     assert torch.isfinite(vb2).all()
     print(f"narrow: output finite, v[0]={float(vb2[0][0]):.4f}")
 
-    # 场景 3:蒸馏 3 步,损失可下降、参数有梯度
+    # scenario 3: 3 distill steps, loss descends and params get gradients
     wrapper_src = NeuralNetWorkWrapper(config['lr'], config['l2'], 3, 64, n, action)
     wrapper_dst = NeuralNetWorkWrapper(config['lr'], config['l2'], 5, 96, n, action)
     map_model(wrapper_src.neural_network, wrapper_dst.neural_network)
@@ -316,25 +324,25 @@ def self_test():
     print("self-test PASS")
 
 
-# ---------------------------------------------------------------- 主流程
+# ---------------------------------------------------------------- main
 
 def main():
-    parser = argparse.ArgumentParser(description="调整模型层数/通道数并蒸馏保留棋力")
-    parser.add_argument('--src', help='源模型路径前缀(如 build/weights/1204,需存在 .pkl)')
-    parser.add_argument('--dst', help='目标模型保存路径前缀(如 build/weights/1205)')
+    parser = argparse.ArgumentParser(description="Resize model layers/channels and distill to preserve strength")
+    parser.add_argument('--src', help='source model path prefix (e.g. build/weights/1204; .pkl must exist)')
+    parser.add_argument('--dst', help='target model save path prefix (e.g. build/weights/1205)')
     parser.add_argument('--layers', type=int, default=config['num_layers'],
-                        help=f"目标残差层数(默认 {config['num_layers']})")
+                        help=f"target residual layer count (default {config['num_layers']})")
     parser.add_argument('--channels', type=int, default=config['num_channels'],
-                        help=f"目标通道数(默认 {config['num_channels']})")
-    parser.add_argument('--steps', type=int, default=1500, help='蒸馏 mini-batch 步数(0=跳过)')
-    parser.add_argument('--batch', type=int, default=config['batch_size'], help='蒸馏 batch size')
-    parser.add_argument('--lr', type=float, default=config['lr'], help='蒸馏学习率')
+                        help=f"target channel count (default {config['num_channels']})")
+    parser.add_argument('--steps', type=int, default=1500, help='distill mini-batch steps (0 = skip)')
+    parser.add_argument('--batch', type=int, default=config['batch_size'], help='distill batch size')
+    parser.add_argument('--lr', type=float, default=config['lr'], help='distill learning rate')
     parser.add_argument('--replay-files', type=int, default=320,
-                        help='蒸馏数据文件数(按 mtime,id 取最新,默认 320=20 轮)')
+                        help='distill data file count (newest by mtime,id; default 320 = 20 iterations)')
     parser.add_argument('--include-archive', action='store_true',
-                        help='把 data_archive 历史文件也纳入候选')
+                        help='include data_archive history files as candidates')
     parser.add_argument('--print-every', type=int, default=50)
-    parser.add_argument('--self-test', action='store_true', help='仅跑结构映射自检,不读盘')
+    parser.add_argument('--self-test', action='store_true', help='run only the structural mapping self-test, no disk access')
     args = parser.parse_args()
 
     if args.self_test:
@@ -342,19 +350,19 @@ def main():
         return
 
     if not args.src or not args.dst:
-        parser.error('--src 与 --dst 必填(或用 --self-test 自检)')
+        parser.error('--src and --dst are required (or use --self-test)')
     if not path.exists(args.src + '.pkl'):
         sys.exit(f"source model not found: {args.src}.pkl")
 
     n, action = config['n'], config['action_size']
 
-    # 源网络 A(结构与 config 一致)
+    # source network A (structure matches config)
     wrapper_a = NeuralNetWorkWrapper(config['lr'], config['l2'], config['num_layers'],
                                      config['num_channels'], n, action,
                                      config['input_channel_size'])
     wrapper_a.load_model(args.src)
 
-    # 目标网络 B
+    # target network B
     wrapper_b = NeuralNetWorkWrapper(args.lr, config['l2'], args.layers, args.channels,
                                      n, action, config['input_channel_size'])
     wrapper_b.set_learning_rate(args.lr)
@@ -362,7 +370,7 @@ def main():
     print(map_model(wrapper_a.neural_network, wrapper_b.neural_network))
     print(f"target: {args.layers} layers x {args.channels} channels")
 
-    # 蒸馏数据(回放窗口 + 可选归档)
+    # distill data (replay window + optional archive)
     data_path = path.join(BUILD_DIR, 'data')
     dirs = [data_path, path.join(path.dirname(data_path), 'data_backup')]
     if args.include_archive:
@@ -385,8 +393,8 @@ def main():
 
     wrapper_b.save_model(args.dst)
     print(f"saved {args.dst}.pkl and {args.dst}.onnx")
-    print("下一步建议:运行 train_and_eval eval_with_winner 让候选与当前 best 对战验收,")
-    print("胜率达标后再手动更新 current_and_best_weight.txt")
+    print("next step: run train_and_eval eval_with_winner to have the candidate face the current best,")
+    print("and update current_and_best_weight.txt manually once the win rate passes the threshold")
 
 
 if __name__ == '__main__':

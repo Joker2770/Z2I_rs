@@ -159,13 +159,13 @@ class NeuralNetWorkWrapper():
 
     def train(self, example_buffer, batch_size, epochs):
         """train neural network
-           epochs: 总 mini-batch 更新次数(带放回采样)
+           epochs: total mini-batch update steps (sampling with replacement)
         """
         n_data = len(example_buffer)
         for epo in range(1, epochs + 1):
             self.neural_network.train()
 
-            # 带放回采样,O(batch_size);AlphaZero 论文做法
+            # sample with replacement, O(batch_size); as in the AlphaZero paper
             sample_idx = np.random.randint(0, n_data, size=batch_size)
             train_data = [example_buffer[i] for i in sample_idx]
 
@@ -187,7 +187,7 @@ class NeuralNetWorkWrapper():
             log_ps, vs = self.neural_network(state_batch)
             loss = self.alpha_loss(log_ps, vs, p_batch, v_batch)
 
-            # entropy 直接由 log_ps 计算,避免第二次前向
+            # compute entropy directly from log_ps to avoid a second forward pass
             with torch.no_grad():
                 probs = torch.exp(log_ps)
                 entropy = -float(torch.mean(torch.sum(probs * log_ps, dim=1)))
@@ -230,7 +230,7 @@ class NeuralNetWorkWrapper():
         state0 = (board_batch > 0).float()
         state1 = (board_batch < 0).float()
 
-        # 当前玩家为白(-1)时交换两个通道,统一为当前玩家视角(向量化)
+        # when the current player is white (-1), swap the two channels to unify the perspective (vectorized)
         cur_player = np.asarray(cur_player_batch, dtype=np.int64)
         swap = torch.from_numpy(cur_player == -1)
         if swap.any():
@@ -238,7 +238,7 @@ class NeuralNetWorkWrapper():
             state0[swap] = state1[swap]
             state1[swap] = tmp
 
-        # last_action 标记(向量化)
+        # last_action marker (vectorized)
         state2 = torch.zeros((len(board_batch), 1, n, n)).float()
         last_action = np.asarray(last_action_batch, dtype=np.int64)
         valid = np.nonzero(last_action >= 0)[0]
@@ -277,7 +277,7 @@ class NeuralNetWorkWrapper():
     def save_model(self, filepath):
         """save model to file
         """
-        # 保存前先删除同名旧文件,避免残留过期模型
+        # remove old files with the same name before saving to avoid stale models
         for suffix in ('.pkl', '.onnx'):
             old_path = filepath + suffix
             if os.path.exists(old_path):
@@ -305,7 +305,7 @@ class NeuralNetWorkWrapper():
                           output_names=['P', 'V'],
                           dynamic_axes=dynamic_axes)
 
-        # 恢复训练设备,避免后续复用同一进程时静默回到 CPU
+        # restore the training device so that later reuse in the same process doesn't silently fall back to CPU
         if self.is_cuda_available:
             self.neural_network.cuda()
 

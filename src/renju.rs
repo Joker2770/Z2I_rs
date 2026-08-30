@@ -139,16 +139,19 @@ impl RenjuJudge {
         v
     }
 
-    /// 统计经过 last_move 的"四"的数量。
+    /// Count the number of "fours" passing through last_move.
     ///
-    /// RIF:DOUBLE-FOUR = 落子同时形成多于一个四(彼此交于落点)。
-    /// 关键:共享同一补点的两个四只算一个四——白棋下一步落在该补点即可
-    /// 同时封堵所有成五路线(如 xxxx_x 的 {0,1,2,3} 与 {1,2,3,5} 补点同为 4;
-    /// xxx_xx 的两个间四补点同为 3),因此不构成四四,属合法着法。
-    /// 仅当存在补点不同的两个四(如 x_xxx_x 补点 5/9)时才是四四禁手。
+    /// RIF DOUBLE-FOUR = a move forms more than one four (intersecting at the move).
+    /// Key point: two fours sharing the same completion point count as one four — if white
+    /// plays that point next, all five-in-a-row routes are blocked at once (e.g. for xxxx_x,
+    /// {0,1,2,3} and {1,2,3,5} both complete at 4; for xxx_xx, the two gapped fours both
+    /// complete at 3), so it is not a double-four and the move is legal.
+    /// Only when there are two fours with different completion points (e.g. x_xxx_x completes
+    /// at 5 and 9) is it a double-four forbidden move.
     ///
-    /// i_flag 组合逻辑正是按此设计:活四两个补点(同一石子集合)只计 1;
-    /// 补点相同的多个四在窗口匹配中产生的 flag 组合不会落入"计 2"分支。
+    /// The i_flag combination logic is designed accordingly: a live four with two completion
+    /// points (the same stone set) counts only 1; flag combinations produced by multiple fours
+    /// sharing the same completion point never fall into the "count 2" branch.
     fn count_a4(board: &Board, last_move: i16, p_drt: (isize, isize)) -> i32 {
         let v = Self::collect_line_colors(board, last_move, p_drt, 4);
         if v.len() < 5 {
@@ -632,7 +635,7 @@ mod tests {
         assert!(judge.is_double_four(&board, last_move));
     }
 
-    // --- RIF 规则对照探针 ---
+    // --- RIF rule reference probes ---
 
     const N: usize = 15;
 
@@ -650,7 +653,7 @@ mod tests {
 
     #[test]
     fn black_exact_five_wins() {
-        // RIF 9.1:黑方恰好五连获胜
+        // RIF 9.1: black wins with exactly five in a row
         let stones = vec![
             (idx(7, 4), Color::Black),
             (idx(7, 5), Color::Black),
@@ -666,7 +669,7 @@ mod tests {
 
     #[test]
     fn black_six_is_overline_not_win() {
-        // RIF 9.1/9.2a:黑方长连不算获胜,是禁手
+        // RIF 9.1/9.2a: black overline is not a win; it is a forbidden move
         let stones = vec![
             (idx(7, 3), Color::Black),
             (idx(7, 4), Color::Black),
@@ -684,7 +687,7 @@ mod tests {
 
     #[test]
     fn white_overline_wins() {
-        // RIF 9.1:白方长连也算获胜
+        // RIF 9.1: white overline also wins
         let stones = vec![
             (idx(7, 3), Color::White),
             (idx(7, 4), Color::White),
@@ -700,7 +703,7 @@ mod tests {
 
     #[test]
     fn single_straight_four_is_legal() {
-        // RIF:单个活四(straight four)合法,不是四四禁手
+        // RIF: a single live four (straight four) is legal, not a double-four forbidden move
         let stones = vec![
             (idx(7, 4), Color::Black),
             (idx(7, 5), Color::Black),
@@ -715,8 +718,8 @@ mod tests {
 
     #[test]
     fn gapped_double_four_is_forbidden() {
-        // RIF 9.2b:x_xxx_x 同时形成两个"间四",是四四禁手
-        // {7,4},{7,6},{7,7},{7,8} 补 {7,5} 成五;{7,6},{7,7},{7,8},{7,10} 补 {7,9} 成五
+        // RIF 9.2b: x_xxx_x forms two "gapped fours" at once, a double-four forbidden move
+        // {7,4},{7,6},{7,7},{7,8} complete at {7,5}; {7,6},{7,7},{7,8},{7,10} complete at {7,9}
         let stones = vec![
             (idx(7, 4), Color::Black),
             (idx(7, 7), Color::Black),
@@ -733,12 +736,12 @@ mod tests {
 
     #[test]
     fn four_three_is_legal() {
-        // RIF:四三(一个四+一个三)合法,是黑方取胜手段
+        // RIF: four-three (one four + one three) is legal, a winning method for black
         let stones = vec![
             (idx(7, 4), Color::Black),
             (idx(7, 5), Color::Black),
-            (idx(7, 7), Color::Black), // 横线活四 _xxxx_
-            (idx(5, 6), Color::Black), // 竖线三 __xxx_
+            (idx(7, 7), Color::Black), // horizontal live four _xxxx_
+            (idx(5, 6), Color::Black), // vertical three __xxx_
             (idx(6, 6), Color::Black),
         ];
         let mut board = board_with(&stones);
@@ -750,8 +753,8 @@ mod tests {
 
     #[test]
     fn double_three_is_forbidden() {
-        // RIF 9.2c:两个活三同时形成是禁手
-        // 横 _xx_x_(7,5),(7,6),(7,8);竖 _x_xx_(5,5),(7,5),(8,5) — 以 (7,5) 为落点
+        // RIF 9.2c: forming two live threes at once is forbidden
+        // horizontal _xx_x_ (7,5),(7,6),(7,8); vertical _x_xx_ (5,5),(7,5),(8,5) — the move is (7,5)
         let stones = vec![
             (idx(7, 6), Color::Black),
             (idx(7, 8), Color::Black),
@@ -768,8 +771,8 @@ mod tests {
 
     #[test]
     fn contiguous_plus_gapped_four_sharing_point_is_legal() {
-        // xxxx_x(cur 补成连四):{0,1,2,3} 与 {1,2,3,5} 的补点同为 4,
-        // 白棋下一步落在 4 即可同时封堵两条成五路线 → 只算一个四 → 合法
+        // xxxx_x (cur completes the contiguous four): {0,1,2,3} and {1,2,3,5} both complete at 4,
+        // so white's next move at 4 blocks both five routes at once -> counts as one four -> legal
         let stones = vec![
             (idx(7, 0), Color::Black),
             (idx(7, 1), Color::Black),
@@ -785,8 +788,8 @@ mod tests {
 
     #[test]
     fn two_gapped_fours_sharing_point_is_legal() {
-        // xxx_xx(cur 在第 3 子):间四 {0,1,2,4} 与 {1,2,4,5} 共享补点 3,
-        // 白棋落在 3 即可同时封堵 → 只算一个四 → 合法
+        // xxx_xx (cur is the 3rd stone): gapped fours {0,1,2,4} and {1,2,4,5} share completion point 3,
+        // white at 3 blocks both at once -> counts as one four -> legal
         let stones = vec![
             (idx(7, 0), Color::Black),
             (idx(7, 1), Color::Black),
@@ -802,8 +805,8 @@ mod tests {
 
     #[test]
     fn two_fours_with_different_points_is_forbidden() {
-        // xx.xxx.xx(cur 在 4):间四 {0,1,3,4} 补点 2、间四 {3,4,5,7} 补点 6,
-        // 白棋无法同时封堵两个补点 → 四四禁手
+        // xx.xxx.xx (cur is the 4th stone): gapped four {0,1,3,4} completes at 2, gapped four {3,4,5,7} completes at 6,
+        // white cannot block both completion points at once -> double-four forbidden move
         let stones = vec![
             (idx(7, 0), Color::Black),
             (idx(7, 1), Color::Black),
@@ -820,11 +823,12 @@ mod tests {
         assert_eq!(judge.get_renju_state(), Pattern::DoubleFour);
     }
 
-    // --- 棋盘角落/边缘特殊情况 ---
+    // --- board corner/edge special cases ---
 
     #[test]
     fn corner_diagonal_black_five_wins() {
-        // (0,0)..(4,4) 主对角线,落点在角落端点:正向越界,反向数到 4 → 黑胜
+        // (0,0)..(4,4) main diagonal, move at the corner endpoint: forward goes out of
+        // bounds, backward counts to 4 -> black wins
         let stones = vec![
             (idx(1, 1), Color::Black),
             (idx(2, 2), Color::Black),
@@ -840,7 +844,7 @@ mod tests {
 
     #[test]
     fn top_edge_black_five_wins() {
-        // 顶边 cols 0..4 水平五连,落点在中间 → 黑胜
+        // top edge, horizontal five on cols 0..4, move in the middle -> black wins
         let stones = vec![
             (idx(0, 0), Color::Black),
             (idx(0, 1), Color::Black),
@@ -855,7 +859,7 @@ mod tests {
 
     #[test]
     fn top_edge_black_six_is_overline() {
-        // 顶边 cols 0..5 黑六连 → 长连禁手(边缘一侧计数到 5 上限)
+        // top edge, black six on cols 0..5 -> overline forbidden (edge-side count caps at 5)
         let stones = vec![
             (idx(0, 0), Color::Black),
             (idx(0, 1), Color::Black),
@@ -872,7 +876,7 @@ mod tests {
 
     #[test]
     fn bottom_edge_white_overline_wins() {
-        // 底边 cols 9..14 白六连 → 白长连也算获胜
+        // bottom edge, white six on cols 9..14 -> white overline also wins
         let stones = vec![
             (idx(14, 9), Color::White),
             (idx(14, 10), Color::White),
@@ -888,7 +892,7 @@ mod tests {
 
     #[test]
     fn left_edge_white_five_wins() {
-        // 左边 col 0 竖五连白 → 白胜
+        // left edge, vertical white five on col 0 -> white wins
         let stones = vec![
             (idx(0, 0), Color::White),
             (idx(1, 0), Color::White),
@@ -903,8 +907,9 @@ mod tests {
 
     #[test]
     fn corner_double_four_is_forbidden() {
-        // (0,0) 落子:横向四 {(0,0)..(0,3)} 补点 (0,4)、纵向四 {(0,0)..(3,0)} 补点 (4,0),
-        // 补点不同 → 四四禁手。覆盖角落落子"前向越界、仅反向收集"的路径
+        // move at (0,0): horizontal four {(0,0)..(0,3)} completes at (0,4), vertical four {(0,0)..(3,0)} completes at (4,0),
+        // different completion points -> double-four forbidden. Covers the "forward out of
+        // bounds, collect backward only" path of a corner move
         let stones = vec![
             (idx(0, 1), Color::Black),
             (idx(0, 2), Color::Black),
@@ -923,8 +928,9 @@ mod tests {
 
     #[test]
     fn bottom_right_corner_double_four_is_forbidden() {
-        // (14,14) 落子:横向四 {(14,11)..(14,14)} 补点 (14,10)、纵向四 {(11,14)..(14,14)}
-        // 补点 (10,14) → 四四禁手。覆盖右下角"反向越界、仅前向收集"的路径
+        // move at (14,14): horizontal four {(14,11)..(14,14)} completes at (14,10), vertical four {(11,14)..(14,14)}
+        // completes at (10,14) -> double-four forbidden. Covers the bottom-right
+        // "backward out of bounds, collect forward only" path
         let stones = vec![
             (idx(14, 11), Color::Black),
             (idx(14, 12), Color::Black),
@@ -943,7 +949,7 @@ mod tests {
 
     #[test]
     fn corner_single_four_is_legal() {
-        // (0,0) 落子仅横向一个冲四 → 合法
+        // move at (0,0) forms only one horizontal straight four -> legal
         let stones = vec![
             (idx(0, 1), Color::Black),
             (idx(0, 2), Color::Black),
@@ -958,8 +964,9 @@ mod tests {
 
     #[test]
     fn top_edge_straight_four_is_legal() {
-        // 顶边 cols 1..4 活四,补点 (0,0) 与 (0,5) 均在盘内 → 单个活四合法;
-        // 覆盖边缘收集不足 4 格时窗口起点裁剪(s ∈ [cur_pos-4, cur_pos])的路径
+        // top edge live four on cols 1..4, completion points (0,0) and (0,5) both on board ->
+        // a single live four is legal; covers the window-start clipping path
+        // (s in [cur_pos-4, cur_pos]) when the edge side collects fewer than 4 cells
         let stones = vec![
             (idx(0, 1), Color::Black),
             (idx(0, 3), Color::Black),
@@ -974,9 +981,10 @@ mod tests {
 
     #[test]
     fn bottom_edge_dead_three_is_not_double_three() {
-        // (14,13) 落子:横向 {11,12,13} 补点 (14,10) 可成活四 → 活三;
-        // 纵向 {12,13,14} 补点 (11,13) 成四后仅剩 (10,13) 单补点(另一端出界) → 死三,
-        // 不构成双三 → 合法。覆盖 count_a3 边缘收集窗口
+        // move at (14,13): horizontal {11,12,13} can become a live four by completing at (14,10) -> live three;
+        // vertical {12,13,14} completes at (11,13) but only (10,13) remains as the single completion
+        // point (other end off board) -> dead three, no double-three -> legal. Covers the
+        // count_a3 edge collection window
         let stones = vec![
             (idx(14, 11), Color::Black),
             (idx(14, 12), Color::Black),
@@ -991,13 +999,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "RIF 9.3 例外未实现:该双三按规则应允许,当前实现判为禁手(保守误判)"]
+    #[ignore = "RIF 9.3 exception not implemented: this double-three should be allowed by the rules, but the current implementation marks it forbidden (conservative false positive)"]
     fn rif_9_3_allowed_double_three() {
-        // RIF 9.3a:两个三中若只有一个能扩展成活四(另一个扩展时会形成四四禁手),
-        // 则此双三是允许的。当前实现会将其判为禁手(错误)。
-        // 竖三 V:(7,5),(8,5),(10,5),唯一扩展点 (9,5) 落子后形成
-        // 竖活四 (7,5)..(10,5) + 横四 (9,3),(9,4),(9,6),(9,5) → 四四禁手,故 V 不可扩展。
-        // 横三 H:(7,5),(7,6),(7,8),扩展点 (7,7) 正常成活四。
+        // RIF 9.3a: if only one of the two threes can be extended into a live four (extending
+        // the other would create a double-four forbidden move), the double-three is allowed.
+        // The current implementation marks it forbidden (wrong).
+        // Vertical three V: (7,5),(8,5),(10,5); its only extension point (9,5) would form
+        // a vertical live four (7,5)..(10,5) plus a horizontal four (9,3),(9,4),(9,6),(9,5) ->
+        // double-four forbidden, so V cannot be extended.
+        // Horizontal three H: (7,5),(7,6),(7,8); extension point (7,7) becomes a live four normally.
         let stones = vec![
             (idx(7, 6), Color::Black),
             (idx(7, 8), Color::Black),
@@ -1010,7 +1020,8 @@ mod tests {
         let mut board = board_with(&stones);
         board[7][5] = Color::Black;
         let mut judge = RenjuJudge::new();
-        // 按 RIF 9.3a 该着法应合法;当前实现判为双三禁手(误判)
+        // per RIF 9.3a this move should be legal; the current implementation marks it a
+        // double-three forbidden move (false positive)
         assert!(judge.is_legal(&board, idx(7, 5) as i16));
     }
 }

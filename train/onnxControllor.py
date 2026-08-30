@@ -59,7 +59,7 @@ class ONNXModel():
         :param image_tensor:
         :return:
         '''
-        # 输入数据的类型必须与模型一致,以下三种写法都是可以的
+        # input data type must match the model; all three variants below are valid
         # scores, boxes = self.onnx_session.run(None, {self.input_name: image_tensor})
         # scores, boxes = self.onnx_session.run(self.output_name, input_feed={self.input_name: image_tensor})
         input_feed = self.get_input_feed(all_tensors)

@@ -13,8 +13,8 @@ config = {
     # neural_network
     'train_use_gpu': True,                     # train neural network using cuda
     'lr': 0.001,                                # learning rate
-    'lr_milestones': [200, 400, 800],           # lr 阶梯衰减触发代际
-    'lr_gamma': 0.5,                            # lr 每次衰减系数
+    'lr_milestones': [200, 400, 800],           # generations at which lr is decayed in steps
+    'lr_gamma': 0.5,                            # lr decay factor per milestone
     'l2': 0.0001,                               # L2
     'num_channels': 256,                        # convolution neural network channel size
     'num_layers' : 4,                           # residual layer number
@@ -32,9 +32,9 @@ config = {
     'update_threshold': 0.55,                   # update model threshold
     'num_contest': 10,                          # new/old model compare times
     'check_freq': 20,                           # test model frequency
-    'examples_buffer_max_len': 20,              # 回放窗口(轮数):训练时使用最近 N 轮自对弈数据
-    'games_per_iter': 16,                       # 每轮自对弈局数,须与 src/configuration.rs 的 NUM_2_SELF_PLAY
-                                                # 及 train/train_loop.sh 的 STEP 保持一致
+    'examples_buffer_max_len': 20,              # replay window (iterations): train on the most recent N iterations of self-play data
+    'games_per_iter': 16,                       # self-play games per iteration; must match NUM_2_SELF_PLAY in src/configuration.rs
+                                                # and STEP in train/train_loop.sh
 
     # test
     'human_color': 1                            # human player's color

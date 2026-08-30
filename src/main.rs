@@ -88,16 +88,16 @@ impl Default for AppConfig {
     }
 }
 
-/// 用户级配置目录:
-/// - Linux 遵循 XDG:`$XDG_CONFIG_HOME/Z2I_rs`,未设置时回退 `~/.config/Z2I_rs`;
-/// - macOS:`~/Library/Application Support/Z2I_rs`;
-/// - Windows:`%APPDATA%\Z2I_rs`。
+/// User-level config directory:
+/// - Linux follows XDG: `$XDG_CONFIG_HOME/Z2I_rs`, falling back to `~/.config/Z2I_rs` when unset;
+/// - macOS: `~/Library/Application Support/Z2I_rs`;
+/// - Windows: `%APPDATA%\Z2I_rs`.
 fn user_config_dir() -> Option<PathBuf> {
     #[cfg(target_os = "linux")]
     {
         if let Ok(dir) = env::var("XDG_CONFIG_HOME") {
             let dir = PathBuf::from(dir);
-            // XDG 规范:相对路径的值应忽略
+            // XDG spec: relative values should be ignored
             if dir.is_absolute() && !dir.as_os_str().is_empty() {
                 return Some(dir.join("Z2I_rs"));
             }
@@ -129,7 +129,7 @@ fn user_config_dir() -> Option<PathBuf> {
 
 impl AppConfig {
     fn load() -> Self {
-        // 查找优先级:用户配置目录 > 当前工作目录 > 可执行文件所在目录
+        // search order: user config dir > current working dir > executable dir
         let candidates = [
             user_config_dir().map(|dir| dir.join("config.toml")),
             env::current_dir().ok().map(|path| path.join("config.toml")),
@@ -263,8 +263,9 @@ impl Brain {
         )
     }
 
-    /// 依据 `INFO timeout_turn`（毫秒，0=尽快落子）计算思考截止时间；
-    /// `None` 表示未收到该指令，不限制思考时间（跑满配置的仿真数）。
+    /// Compute the thinking deadline from `INFO timeout_turn` (milliseconds, 0 = move ASAP);
+    /// `None` means the command was not received, so thinking time is unlimited
+    /// (run the configured number of simulations).
     fn think_deadline(&self) -> Option<Instant> {
         self.timeout_turn
             .map(|ms| Instant::now() + Duration::from_millis(ms))
@@ -284,12 +285,14 @@ impl Brain {
         true
     }
 
-    /// 处理 `INFO rule <value>` 命令（该命令可能先于或晚于 START 到达）：
-    /// - 规则未变化：直接返回，避免重复加载模型、浪费对局时间；
-    /// - START 之前（尚无对局）：仅记录规则，模型将在 START 时按新规则加载；
-    /// - START 之后、尚未落子：棋盘应用新规则；仅当新规则对应的模型与当前
-    ///   已加载的模型不同（或尚未加载）时，才重新加载模型并重建 MCTS；
-    /// - 已落子之后：不打断进行中的对局，新规则仅对下一局生效。
+    /// Handle the `INFO rule <value>` command (it may arrive before or after START):
+    /// - rule unchanged: return immediately to avoid reloading the model and wasting game time;
+    /// - before START (no game yet): only record the rule; the model is loaded for the new rule at START;
+    /// - after START but before any move: the board applies the new rule; reload the model and
+    ///   rebuild MCTS only when the model for the new rule differs from the one already loaded
+    ///   (or none is loaded);
+    /// - after moves have been played: do not interrupt the game in progress; the new rule takes
+    ///   effect for the next game only.
     fn apply_rule(&mut self, rule: RuleFlag) {
         if rule == self.rule {
             return;
@@ -352,10 +355,11 @@ impl Brain {
         is_succeed
     }
 
-    /// 后台思考：在等待对方行棋期间执行一批 MCTS 仿真。
-    /// - 对局未开始或已经结束：立即返回，不空耗 CPU；
-    /// - 否则并发执行 `sims_per_batch` 个仿真。批次边界是搜索树的一致点，
-    ///   因此收到对方着法时最多只需等当前批次完成（毫秒级）。
+    /// Background pondering: run one batch of MCTS simulations while waiting for the opponent.
+    /// - game not started or already over: return immediately, don't burn CPU;
+    /// - otherwise run `sims_per_batch` simulations concurrently. A batch boundary is a consistent
+    ///   point of the search tree, so when the opponent's move arrives we at most wait for the
+    ///   current batch to finish (millisecond scale).
     async fn ponder_batch(&mut self) {
         let (Some(game), Some(mcts)) = (self.game.as_mut(), self.mcts.as_ref()) else {
             return;
@@ -366,7 +370,7 @@ impl Brain {
         mcts.simulation_batch(game).await;
     }
 
-    /// 是否处于可后台思考的状态：已创建对局且对局仍在进行中。
+    /// Whether pondering is possible: a game exists and is still in progress.
     fn should_ponder(&mut self) -> bool {
         self.enable_ponder
             && self
@@ -472,10 +476,11 @@ async fn run_protocol() {
     let mut brain = Brain::new();
     let mut board_lines: Option<Vec<(u16, u8)>> = None;
 
-    // 用独立 OS 线程持续读取 manager 命令并经通道转发，主循环在等待
-    // 命令期间可以持续推进后台思考。注意不能用 tokio::spawn 读 tokio
-    // stdin：程序退出时 runtime 会等待阻塞在读操作上的读行任务，导致
-    // 收到 END 后进程无法立即结束；std 线程会随进程退出被直接终止。
+    // A dedicated OS thread keeps reading manager commands and forwards them via a channel,
+    // so the main loop can keep advancing background pondering while waiting for commands.
+    // Note: do not use tokio::spawn to read tokio stdin — on exit the runtime would wait for
+    // the read-line task blocked on the read, so the process couldn't exit immediately after
+    // END; an std thread is terminated directly when the process exits.
     let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     std::thread::spawn(move || {
         for line in std::io::stdin().lock().lines() {
@@ -491,10 +496,11 @@ async fn run_protocol() {
     });
 
     loop {
-        // 等待下一行命令；对局进行中（非 BOARD 收集模式）时，把等待对方
-        // 行棋的时间也利用起来，在后台持续执行 MCTS 仿真（逐批推进），
-        // 直到收到命令。收到命令时最多只需等当前批次自然完成（毫秒级），
-        // 不会中途取消仿真导致 virtual_loss 残留。
+        // Wait for the next command line; while a game is in progress (not in BOARD collection mode),
+        // use the time waiting for the opponent's move to keep running MCTS simulations in the
+        // background (batch by batch) until a command arrives. When a command arrives we at most
+        // wait for the current batch to finish naturally (millisecond scale); simulations are never
+        // cancelled mid-way, which would leave virtual_loss residue.
         let line = if board_lines.is_none() {
             loop {
                 match line_rx.try_recv() {
@@ -763,7 +769,7 @@ mod tests {
         let mut brain = test_brain();
         assert!(brain.start(15));
 
-        // 模拟等待对方行棋期间的后台思考
+        // simulate background pondering while waiting for the opponent's move
         brain.ponder_batch().await;
 
         let action = brain.begin().await.expect("BEGIN should return a move");
@@ -821,7 +827,7 @@ mod tests {
         assert!(!brain.load_board(&[(112, 1), (112, 2)]));
     }
 
-    // --- INFO rule 9:标准 caro(0b1001 = exactly-five(1) | caro(8)) ---
+    // --- INFO rule 9: standard caro (0b1001 = exactly-five(1) | caro(8)) ---
 
     #[test]
     fn info_rule_9_parses_to_standard_caro() {
@@ -848,7 +854,7 @@ mod tests {
     fn info_rule_9_before_start_is_applied_on_start() {
         let mut brain = test_brain();
 
-        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // START 之前到达
+        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // arrived before START
         assert!(brain.start(15));
 
         assert_eq!(
@@ -862,7 +868,7 @@ mod tests {
         let mut brain = test_brain();
         assert!(brain.start(15));
 
-        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // START 之后、尚未落子
+        brain.apply_rule(RuleFlag::from_bits_truncate(9)); // after START, before any move
 
         assert_eq!(brain.rule, RuleFlag::Standard | RuleFlag::Caro);
         assert_eq!(

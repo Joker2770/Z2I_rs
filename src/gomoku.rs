@@ -122,8 +122,8 @@ impl CheckResult {
         }
 
         if RuleFlag::FreeStyle != flag {
-            // 组合规则(如 standard-caro = 0b1001)要求所有必需子规则同时判胜:
-            // flag 是本次全部判胜子规则的并集,必须包含 rule_flag 的每一位。
+            // Combined rules (e.g. standard-caro = 0b1001) require all mandatory sub-rules to win simultaneously:
+            // flag is the union of all winning sub-rules this turn and must contain every bit of rule_flag.
             is_win = *rule_flag & flag == *rule_flag;
         }
 
@@ -481,15 +481,16 @@ mod tests {
         );
     }
 
-    // --- INFO rule 9:标准 caro(0b1001 = exactly-five(1) | caro(8)) ---
+    // --- INFO rule 9: standard caro (0b1001 = exactly-five(1) | caro(8)) ---
 
     fn standard_caro() -> RuleFlag {
         RuleFlag::Standard | RuleFlag::Caro
     }
 
-    /// 构造 15x15 棋局、应用 rule 9 并加载局面。
-    /// 注意:`get_game_status` 以 `last_move` 为判胜检查点,因此 stones
-    /// 的最后一个元素必须是需要判定的关键落子;且总手数需 ≥ 9 才会触发规则判定。
+    /// Build a 15x15 game, apply rule 9 and load the position.
+    /// Note: `get_game_status` checks for a win at `last_move`, so the last element
+    /// of stones must be the key move to judge; also the total move count must be >= 9
+    /// for the rule check to trigger.
     fn rule9_game(stones: &[(u16, Color)]) -> Gomoku {
         let mut gomoku = Gomoku::new(15, 5).unwrap();
         assert!(gomoku.set_rule(standard_caro()));
@@ -499,7 +500,7 @@ mod tests {
 
     #[test]
     fn rule_9_is_standard_caro_bitmask() {
-        // 协议:rule = 位掩码,1=exactly five,8=caro,9=两者之和
+        // protocol: rule = bitmask, 1=exactly five, 8=caro, 9=sum of both
         assert_eq!(
             RuleFlag::from_bits_truncate(9),
             RuleFlag::Standard | RuleFlag::Caro
@@ -508,7 +509,7 @@ mod tests {
 
     #[test]
     fn standard_caro_open_five_wins() {
-        // xxxxx,两端均未堵 → 胜
+        // xxxxx, open at both ends -> wins
         let mut stones = vec![
             (0u16, Color::White),
             (1, Color::White),
@@ -522,7 +523,7 @@ mod tests {
 
     #[test]
     fn standard_caro_five_blocked_at_one_end_wins() {
-        // o xxxxx _,仅一端被堵 → 胜
+        // o xxxxx _, blocked at one end only -> wins
         let mut stones = vec![
             ((7 * 15 + 3) as u16, Color::White),
             (0u16, Color::White),
@@ -536,7 +537,7 @@ mod tests {
 
     #[test]
     fn standard_caro_five_blocked_at_both_ends_is_not_win() {
-        // o xxxxx o,恰好五连但两端被堵 → 不判胜
+        // o xxxxx o, exactly five but blocked at both ends -> not a win
         let mut stones = vec![
             ((7 * 15 + 3) as u16, Color::White),
             ((7 * 15 + 9) as u16, Color::White),
@@ -553,7 +554,7 @@ mod tests {
 
     #[test]
     fn standard_caro_six_in_a_row_is_not_win() {
-        // xxxxxx,长连不满足 exactly five → 不判胜
+        // xxxxxx, overline does not satisfy exactly five -> not a win
         let mut stones = vec![
             (0u16, Color::White),
             (1, Color::White),

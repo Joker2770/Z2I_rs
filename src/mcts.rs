@@ -156,8 +156,8 @@ pub struct MCTS {
     c_puct: f64,
     c_virtual_loss: f64,
     sims_per_batch: u8,
-    /// 串行化对搜索树的读写（select 下降 / expand / backpropagate），
-    /// 避免多个并发仿真任务同时抢占 select。锁内不能包含 `.await`。
+    /// Serializes reads/writes of the search tree (select descent / expand / backpropagate),
+    /// so concurrent simulation tasks cannot race on select. The lock must not be held across `.await`.
     tree_lock: Mutex<()>,
 }
 
@@ -239,11 +239,12 @@ impl MCTS {
         self.get_action_probs_within(gomoku, temp, None).await
     }
 
-    /// 在截止时间前尽可能多地执行仿真批次：
-    /// - `deadline` 为 `None`：跑满配置的仿真次数；
-    /// - 时间盈余不足以完成一个批次时，仅执行 1 次仿真（保证根节点被展开、
-    ///   可选出合理着法）后立即返回；
-    /// - 否则每批开始前若时间盈余不足 `TIME_RESERVE_MS` 毫秒即停止仿真。
+    /// Run as many simulation batches as possible before the deadline:
+    /// - `deadline` is `None`: run the configured number of simulations;
+    /// - if the remaining time cannot fit one batch, run a single simulation (so the root
+    ///   is expanded and a reasonable move can be chosen) and return immediately;
+    /// - otherwise stop simulating when the time left before each batch is less than
+    ///   `TIME_RESERVE_MS` milliseconds.
     pub async fn get_action_probs_within(
         &self,
         gomoku: &Gomoku,
@@ -285,9 +286,9 @@ impl MCTS {
         }
         // explore
         else {
-            // 将访问次数转化为策略概率：π(a) ∝ N(a)^(1/τ)。
-            // 为避免数值溢出，先在对数域计算 log π(a) = (1/τ) * ln(N(a))，
-            // 再减去最大对数值（max_log_prob）后取 exp，即 softmax 的数值稳定写法。
+            // Convert visit counts into policy probabilities: π(a) ∝ N(a)^(1/τ).
+            // To avoid numerical overflow, compute log π(a) = (1/τ) * ln(N(a)) in the log domain
+            // and subtract the max (max_log_prob) before exponentiating — the numerically stable softmax form.
             let inv_temp = (1.0).div(temp);
             let mut log_probs = vec![f64::NEG_INFINITY; priors_size];
             let mut max_log_prob = f64::NEG_INFINITY;
@@ -378,9 +379,10 @@ impl MCTS {
         best_action
     }
 
-    /// 执行一批并发仿真（`sims_per_batch` 个）。
-    /// 批次边界是搜索树状态的一致点：批内仿真引发的 virtual_loss 均已回退，
-    /// 因此适合在批次边界让出控制权（例如把对手的思考时间用于后台思考）。
+    /// Run one batch of concurrent simulations (`sims_per_batch` of them).
+    /// A batch boundary is a consistent point of the search tree: the virtual_loss
+    /// from simulations in the batch has been rolled back, so it is a good place to
+    /// yield control (e.g. to use the opponent's thinking time for background pondering).
     pub async fn simulation_batch(&self, gomoku: &Gomoku) {
         let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
         future::join_all(simulations).await;
@@ -391,10 +393,11 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        // 剩余时间不足以完成一个批次（例如 timeout_turn=0 表示尽快落子）：
-        // 不再等待整批并发仿真，只执行 1 次仿真。单次仿真已足够展开根节点
-        // （获得网络先验并积累 1 次访问），之后仍能按 PUCT/访问次数选出合理
-        // 着法；响应时间由整批（debug 构建下数百毫秒以上）缩短为单次推理。
+        // Not enough time for one batch (e.g. timeout_turn=0 means move as soon as possible):
+        // skip waiting for a whole batch and run a single simulation instead. One simulation is
+        // enough to expand the root (obtaining network priors and one visit), and a reasonable
+        // move can still be picked by PUCT/visit count afterwards; response time shrinks from a
+        // whole batch (hundreds of ms or more in debug builds) to a single inference.
         if let Some(deadline) = deadline
             && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
         {
@@ -412,8 +415,8 @@ impl MCTS {
         }
     }
 
-    /// 在 `simulation_within` 的基础上，每隔 `report_interval` 调用一次 `report`，
-    /// 用于把根节点的搜索进展定期输出给 manager（open_mind 调试输出）。
+    /// Like `simulation_within`, but calls `report` every `report_interval` to send
+    /// the root search progress to the manager periodically (open_mind debug output).
     pub async fn simulation_within_reporting(
         &self,
         gomoku: &Gomoku,
@@ -425,7 +428,7 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        // 与 `simulation_within` 相同的快速路径：时间不足时仅做 1 次仿真。
+        // same fast path as `simulation_within`: run a single simulation when out of time.
         if let Some(deadline) = deadline
             && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
         {
@@ -473,9 +476,9 @@ impl MCTS {
         best_action
     }
 
-    /// 输出根节点第一层子节点的动作坐标与访问次数：
+    /// Print the action coordinates and visit counts of the root's first-level children:
     /// `DEBUG thinking x1,y1,visits1 x2,y2,visits2 ...`
-    /// 子节点过多时，过滤访问次数较少的子节点。
+    /// When there are too many children, filter out those with fewer visits.
     pub fn print_thinking(&self, board_size: u8) {
         let root = self.root.borrow();
         let children = root.children.borrow();
@@ -492,7 +495,7 @@ impl MCTS {
             return;
         }
 
-        // 子节点过多时，只保留访问次数最多的若干个
+        // when there are too many children, keep only those with the most visits
         if entries.len() > cfg::OPEN_MIND_THINKING_MAX_CHILDREN {
             entries.sort_unstable_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
             entries.truncate(cfg::OPEN_MIND_THINKING_MAX_CHILDREN);
@@ -510,7 +513,8 @@ impl MCTS {
     pub fn get_action_by_sample(&self, probs: &[f64]) -> u16 {
         let total: f64 = probs.iter().take(self.action_size as usize).sum();
         if total <= f64::EPSILON {
-            // 概率全为 0(不应发生):退化为取第一个非零概率的动作
+            // all-zero probabilities (should not happen): fall back to the first
+            // action with a non-zero probability
             return probs
                 .iter()
                 .take(self.action_size as usize)
@@ -518,7 +522,8 @@ impl MCTS {
                 .map(|i| i as u16)
                 .unwrap_or(0);
         }
-        // 按总和归一后采样,避免浮点误差导致累积和永不越过 r
+        // normalize by the total before sampling, so floating-point error can't keep
+        // the cumulative sum from ever crossing r
         let r: f64 = rand::random();
         let mut accum = 0.0;
         for (i, p) in probs.iter().take(self.action_size as usize).enumerate() {
@@ -527,7 +532,8 @@ impl MCTS {
                 return i as u16;
             }
         }
-        // 浮点误差边界:r 极接近 1 时返回最后一个非零概率的动作
+        // floating-point edge case: when r is extremely close to 1, return the last
+        // action with a non-zero probability
         probs
             .iter()
             .take(self.action_size as usize)
@@ -539,8 +545,9 @@ impl MCTS {
     }
 
     pub async fn simulation(&self, gomoku: &Gomoku) {
-        // 阶段一：持锁执行 select 下降。锁把多个并发仿真任务的树内选择串行化，
-        // 避免它们同时抢占 select、选到同一分支或并发修改 virtual_loss。
+        // phase 1: select descent while holding the lock. The lock serializes in-tree
+        // selection across concurrent simulation tasks, so they cannot race on select,
+        // pick the same branch, or modify virtual_loss concurrently.
         let (node, mut g) = {
             let _select_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
             let mut node = Rc::clone(&self.root.borrow());
@@ -564,7 +571,7 @@ impl MCTS {
             }
 
             (node, g)
-        }; // 推理前释放锁，锁内不包含 .await
+        }; // release the lock before inference; the lock is not held across .await
 
         let (game_stage, color) = {
             let status = g.get_game_status();
@@ -615,7 +622,7 @@ impl MCTS {
                 }
             }
 
-            // 阶段二：持锁完成 expand 与 backpropagate，保证树变更的原子性
+            // phase 2: expand and backpropagate while holding the lock, keeping tree mutations atomic
             let _tree_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
             for (i, v) in legal_hash_tab.iter().enumerate() {
                 if *v == 1 {
@@ -750,21 +757,21 @@ mod tests {
     fn get_action_by_sample_respects_probs_and_handles_zero_total() {
         let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, 4);
 
-        // 单点分布:必然返回唯一非零项
+        // one-hot distribution: must return the single non-zero entry
         assert_eq!(mcts.get_action_by_sample(&[0.0, 1.0, 0.0, 0.0]), 1);
         assert_eq!(mcts.get_action_by_sample(&[0.0, 0.0, 0.0, 1.0]), 3);
 
-        // 全零分布:退化为返回 0
+        // all-zero distribution: falls back to 0
         assert_eq!(mcts.get_action_by_sample(&[0.0, 0.0, 0.0, 0.0]), 0);
 
-        // 概率和不恰好为 1(浮点误差):仍只返回非零概率的动作
+        // sum not exactly 1 (floating-point error): still only returns actions with non-zero probability
         let probs = [0.3, 0.3, 0.3999999, 0.0];
         for _ in 0..1000 {
             let action = mcts.get_action_by_sample(&probs);
             assert!(action < 3 && probs[action as usize] > 0.0);
         }
 
-        // 均匀分布:多次采样应覆盖全部非零项
+        // uniform distribution: repeated sampling should cover all non-zero entries
         let mut seen = [false; 4];
         for _ in 0..1000 {
             let action = mcts.get_action_by_sample(&[0.25, 0.25, 0.25, 0.25]);
@@ -791,7 +798,8 @@ mod tests {
             .await;
 
         assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        // 时间不足时不做整批仿真，仅执行 1 次仿真后立即返回（快速响应）
+        // when out of time, skip the full batch, run one simulation and return
+        // immediately (fast response)
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
         assert_eq!(root_visits, 1);
     }
