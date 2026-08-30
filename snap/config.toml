@@ -1,0 +1,23 @@
+# User-level configuration TEMPLATE for the z2i-rs snap.
+# The snap does not bundle any weights. Copy this file to
+#   ~/snap/z2i-rs/current/.config/Z2I_rs/config.toml
+# and set each model path to your own ONNX weight (absolute paths are
+# resolved directly; relative paths are looked up in the current working
+# directory, then in the executable directory).
+
+[model]
+default_model = "/path/to/your/weight.onnx"
+free_style_model = "/path/to/your/weight.onnx"
+renju_model = "/path/to/your/weight.onnx"
+standard_model = "/path/to/your/weight.onnx"
+caro_model = "/path/to/your/weight.onnx"
+standard_caro_model = "/path/to/your/weight.onnx"
+
+[MCTS]
+num_mct_sims = 400
+num_sim_per_batch = 16
+open_mind = false
+enable_ponder = true
+
+[ONNXRUNTIME]
+num_intra_thread = 4

@@ -196,6 +196,30 @@ Each MCTS simulation sends its inference request to the background ONNX worker. 
 
 Therefore, a larger batch size may improve GPU throughput, but increases the per-request latency and memory usage. The MCTS simulation count is controlled by `num_mct_sims`.
 
+## Snap
+
+A snap named `z2i-rs` is published on snapcraft.io; the packaging lives in `snap/snapcraft.yaml`. It ships the engine binary only and builds from the GitHub main branch. No weights are bundled — after installing, copy `snap/config.toml` to `~/snap/z2i-rs/current/.config/Z2I_rs/config.toml` and point the model paths at your own ONNX weight.
+
+Build locally (requires lxd):
+
+```bash
+sudo snap install lxd && sudo lxd init --auto
+snapcraft pack
+```
+
+Or build in destructive mode (not recommended for release):
+
+```bash
+snapcraft pack --destructive-mode
+```
+
+Publish:
+
+```bash
+snapcraft login
+snapcraft upload --release=edge z2i-rs_*.snap
+```
+
 ## Development checks
 
 ```bash

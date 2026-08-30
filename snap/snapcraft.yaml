@@ -1,0 +1,68 @@
+name: z2i-rs
+base: core24
+version: '0.1.0'
+summary: Gomoku/Renju AI engine with neural network and MCTS
+description: |
+  Z2I_rs is a Gomoku/Renju AI engine based on a neural network and Monte Carlo
+  Tree Search (MCTS), implementing the Gomocup/Piskvork console protocol
+  (START/BEGIN/TURN/BOARD/INFO/ABOUT/END) over stdin/stdout. It bundles
+  ONNX Runtime inference and supports FreeStyle, Standard, Renju, Caro and
+  Standard+Caro rule flags.
+
+  The snap ships the engine binary only; no weights are bundled.
+
+  Configuration:
+  - On startup the engine looks for config.toml in the user config directory
+    (~/snap/z2i-rs/current/.config/Z2I_rs/), then in the current working
+    directory, then next to the executable.
+  - Point the [model] entries at your own ONNX weights (default_model,
+    free_style_model, renju_model, standard_model, caro_model,
+    standard_caro_model). Absolute paths are used as-is; relative paths are
+    resolved against the working directory first, then the executable
+    directory.
+  - [MCTS] controls num_mct_sims, num_sim_per_batch, open_mind and
+    enable_ponder; [ONNXRUNTIME] controls num_intra_thread.
+  - A template covering all supported keys is available in the source
+    repository at snap/config.toml.
+
+  Notes:
+  - The neural network input tensor is fixed at 3x15x15; use weights exported
+    for a 15x15 board.
+  - Without a valid model the engine still plays, using plain MCTS (weaker).
+
+  Use it with a Gomoku manager such as qpiskvork.
+license: MIT
+grade: stable
+confinement: strict
+
+platforms:
+  amd64:
+  arm64:
+
+apps:
+  z2i-rs:
+    command: bin/pbrain-Z2I_rs
+    plugs:
+      - home              # user-level config.toml and weights under $HOME
+      - removable-media   # weights stored on mounted removable media (/media, /run/media)
+
+parts:
+  # Builds from the GitHub main branch. rust-channel: stable forces a rustup
+  # toolchain install (edition 2024 needs rustc >= 1.85, newer than the one
+  # shipped in Ubuntu 24.04). Only the pbrain-Z2I_rs binary is installed.
+  z2i-rs:
+    plugin: rust
+    source: https://github.com/Joker2770/Z2I_rs.git
+    source-type: git
+    source-branch: main
+    rust-channel: stable
+    rust-cargo-parameters:
+      - --bin
+      - pbrain-Z2I_rs
+    build-packages:
+      - build-essential
+      - ca-certificates
+      - curl
+      - pkg-config
+
+

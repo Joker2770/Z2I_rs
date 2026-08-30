@@ -28,6 +28,10 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+
+# Snapcraft build artifacts
+*.snap
+*.snapcraft.yaml.bak
 htmlcov/
 .venv/
 venv/
