@@ -145,7 +145,7 @@ def read_raw_features(file_path):
     """
     n = config['n']
     N2 = n * n
-    bytes_per_step = N2 * 4 * 3 + 3 * 4
+    bytes_per_step = N2 * 4 + N2 * 4 + 3 * 4
     try:
         file_size = path.getsize(file_path)
         with open(file_path, 'rb') as binfile:
@@ -355,7 +355,7 @@ def main():
     wrapper_a.load_model(args.src)
 
     # 目标网络 B
-    wrapper_b = NeuralNetWorkWrapper(args.lr, args.l2, args.layers, args.channels,
+    wrapper_b = NeuralNetWorkWrapper(args.lr, config['l2'], args.layers, args.channels,
                                      n, action, config['input_channel_size'])
     wrapper_b.set_learning_rate(args.lr)
 
