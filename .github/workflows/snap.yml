@@ -2,7 +2,7 @@ name: Snap
 
 on:
   push:
-    branches: [main]
+    tags: ['v*']
   workflow_dispatch: {}
 
 jobs:
@@ -11,11 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Pin snap version and source for tag release
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          sed -i "s|^version: .*|version: '${TAG_VERSION}'|" snap/snapcraft.yaml
+          sed -i "s|^    source-branch: main|    source-tag: ${GITHUB_REF_NAME}|" snap/snapcraft.yaml
+          git diff -- snap/snapcraft.yaml
+
       - name: Build snap
         uses: snapcore/action-build@v1
         id: build
 
-      - name: Publish snap to edge channel
+      - name: Publish snap
         uses: snapcore/action-publish@v1
         env:
           SNAPCRAFT_STORE_CREDENTIALS: ${{ secrets.STORE_LOGIN }}
