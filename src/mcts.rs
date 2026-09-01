@@ -563,7 +563,15 @@ impl MCTS {
                         node = Rc::clone(&c);
                     } else {
                         eprintln!("Illegal move!!!");
-                        drop(c);
+                        // defensive: `select` has already incremented this child's virtual loss;
+                        // roll it back and stop descending, otherwise the loop would re-select the
+                        // same illegal child, leaking virtual loss and potentially spinning forever
+                        // on a permanently over-penalized node
+                        let old_vl = c.virtual_loss.borrow().load(Ordering::SeqCst);
+                        c.virtual_loss
+                            .borrow_mut()
+                            .store(old_vl.saturating_sub(1), Ordering::SeqCst);
+                        break;
                     }
                 } else {
                     break;
