@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Joker2770
 
-use rand::{self, RngExt};
+use rand;
 use rand_distr::{multi::Dirichlet, Distribution};
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
@@ -107,7 +107,6 @@ impl SelfPlay {
                 last_move_buffer[step as usize] = game_ref.borrow().get_last_move();
 
                 let lm = game_ref.borrow().get_legal_moves().to_vec();
-                hasher.update(&lm);
                 // AlphaZero exploration noise: add Dirichlet noise on legal moves
                 // η ~ Dir(α),π = (1 - ε)·p + ε·η(ε = cfg::DIRI,α = cfg::DIRICHLET_ALPHA)
                 let legal_count = lm
@@ -130,6 +129,10 @@ impl SelfPlay {
                 }
 
                 let rst = mcts.get_action_by_sample(&action_probs);
+                // canonical game fingerprint: the chosen move sequence uniquely determines the
+                // stored board/π/v content, so identical games map to the same file (deterministic
+                // dedup) and distinct games to distinct files; no random suffix is needed
+                hasher.update(rst.to_ne_bytes());
                 mcts.update_root_with_action(&game_ref.borrow(), rst);
                 if !game_ref.borrow_mut().execute_move(rst) {
                     // defensive: refresh the terminal status before bailing out of a failed move,
@@ -162,9 +165,8 @@ impl SelfPlay {
                 "Self play: total step num = {} winner = {}",
                 step, win_col_2_i
             );
-            hasher.update(game_ref.borrow().get_last_move().to_ne_bytes());
-            hasher.update(game_ref.borrow().get_legal_moves());
-            hasher.update(rng.random_range(0..u16::MAX).to_ne_bytes());
+            // length marker guards the degenerate zero-move case; the winner is implied by moves
+            hasher.update(step.to_ne_bytes());
             let hash_rst = hasher.finalize();
             let hex_string = hex::encode(hash_rst);
 
