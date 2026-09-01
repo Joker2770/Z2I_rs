@@ -22,23 +22,38 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             ext: tar.gz
+            features: ''
+          - name: linux-x86_64-cuda
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+            features: cuda
           - name: linux-aarch64
             os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             ext: tar.gz
             experimental: true
+            features: ''
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             ext: zip
+            features: ''
+          - name: windows-x86_64-cuda
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+            features: cuda
           - name: macos-x86_64
             os: macos-13
             target: x86_64-apple-darwin
             ext: tar.gz
+            features: ''
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
             ext: tar.gz
+            features: ''
 
     steps:
       - uses: actions/checkout@v4
@@ -51,10 +66,13 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          # matrix.name 区分 CPU/CUDA 变体,避免同一 target 下不同 feature 缓存串扰
+          key: ${{ matrix.name }}
 
       - name: Build release binaries
-        run: cargo build --release --locked --bin pbrain-Z2I_rs --bin train_and_eval --target ${{ matrix.target }}
+        # CUDA 变体使用 ort 的 cuda + load-dynamic 特性:二进制在运行时加载 CUDA 版
+        # libonnxruntime(需设置 ORT_LIB_LOCATION),而非编译期静态链接
+        run: cargo build --release --locked --bin pbrain-Z2I_rs --bin train_and_eval --target ${{ matrix.target }} ${{ matrix.features != '' && format('--features {0}', matrix.features) || '' }}
 
       - name: Stage and archive (Linux / macOS)
         if: runner.os != 'Windows'
