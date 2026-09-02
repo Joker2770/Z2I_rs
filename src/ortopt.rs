@@ -104,13 +104,14 @@ impl NeuralNetwork {
     pub fn transform_board_2_tensor(
         &self,
         board: &Board,
+        board_size: u8,
         last_move: i16,
         cur_color: &Color,
     ) -> Vec<f32> {
         let mut input_tensor_values =
             vec![
                 0.0;
-                cfg::CHANNEL_SIZE as usize * cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize
+                cfg::CHANNEL_SIZE as usize * board_size as usize * board_size as usize
             ];
         let mut first = 0;
         let mut second = 0;
@@ -119,21 +120,21 @@ impl NeuralNetwork {
         } else {
             first = 1;
         }
-        for r in 0..cfg::BOARD_SIZE {
-            for c in 0..cfg::BOARD_SIZE {
+        for r in 0..board_size {
+            for c in 0..board_size {
                 match board[r as usize][c as usize] {
                     Color::Black => {
                         input_tensor_values[first as usize
-                            * cfg::BOARD_SIZE as usize
-                            * cfg::BOARD_SIZE as usize
-                            + r as usize * cfg::BOARD_SIZE as usize
+                            * board_size as usize
+                            * board_size as usize
+                            + r as usize * board_size as usize
                             + c as usize] = 1.0;
                     }
                     Color::White => {
                         input_tensor_values[second as usize
-                            * cfg::BOARD_SIZE as usize
-                            * cfg::BOARD_SIZE as usize
-                            + r as usize * cfg::BOARD_SIZE as usize
+                            * board_size as usize
+                            * board_size as usize
+                            + r as usize * board_size as usize
                             + c as usize] = 1.0
                     }
                     _ => {}
@@ -144,7 +145,7 @@ impl NeuralNetwork {
         // (last_move == -1), matching the training-feature convention in
         // ort_train.rs and train/neural_network.py.
         if last_move >= 0 {
-            input_tensor_values[2 * cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize
+            input_tensor_values[2 * board_size as usize * board_size as usize
                 + last_move as usize] = 1.0;
         }
         input_tensor_values
@@ -153,6 +154,7 @@ impl NeuralNetwork {
     pub fn transform_gomoku_2_tensor(&self, gomoku: &Gomoku) -> Vec<f32> {
         self.transform_board_2_tensor(
             gomoku.get_board(),
+            gomoku.get_board_size(),
             gomoku.get_last_move(),
             gomoku.get_cur_color(),
         )

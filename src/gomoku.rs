@@ -204,6 +204,10 @@ impl Gomoku {
         &self.board
     }
 
+    pub fn get_board_size(&self) -> u8 {
+        self.board_size
+    }
+
     pub fn get_last_move(&self) -> i16 {
         self.last_move
     }
