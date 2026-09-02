@@ -46,7 +46,11 @@ impl CheckResult {
         last_move: i16,
     ) -> &(GameStage, Color) {
         if last_move < 0 {
-            return &(GameStage::Running, Color::Blank);
+            // Empty board (no move played yet): no win and no forbidden move.
+            // Update chk_rst so callers reading self.chk_rst see the same result
+            // as the returned reference.
+            self.chk_rst = (GameStage::Running, Color::Blank);
+            return &self.chk_rst;
         }
         let mut is_win = false;
         let mut flag = RuleFlag::FreeStyle;

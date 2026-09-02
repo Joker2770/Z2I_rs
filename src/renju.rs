@@ -446,8 +446,9 @@ impl RenjuJudge {
     }
 
     pub fn check_win(&mut self, board: &Board, last_move: i16) -> bool {
+        // no move played yet (empty board or invalid index): nothing to check
         if last_move < 0 {
-            return last_move == -1;
+            return false;
         }
         let n = board.len();
         if n == 0 {
@@ -615,6 +616,17 @@ mod tests {
         let mut judge = RenjuJudge::new();
         assert!(judge.check_win(&board, last_move));
         assert_eq!(judge.get_renju_state(), Pattern::FiveInARow);
+    }
+
+    #[test]
+    fn renju_empty_board_is_not_a_win() {
+        let n = 15;
+        let board = vec![vec![Color::Blank; n]; n];
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.check_win(&board, -1));
+        assert!(!judge.check_win(&board, -2));
+        // no move played yet: nothing can be forbidden
+        assert!(judge.is_legal(&board, -1));
     }
 
     #[test]

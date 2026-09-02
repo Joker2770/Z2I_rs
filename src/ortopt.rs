@@ -139,10 +139,13 @@ impl NeuralNetwork {
                     _ => {}
                 }
             }
-            if last_move >= 0 {
-                input_tensor_values[2 * cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize
-                    + last_move as usize] = 1.0;
-            }
+        }
+        // last-move marker channel: stays all zeros when the board is empty
+        // (last_move == -1), matching the training-feature convention in
+        // ort_train.rs and train/neural_network.py.
+        if last_move >= 0 {
+            input_tensor_values[2 * cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize
+                + last_move as usize] = 1.0;
         }
         input_tensor_values
     }

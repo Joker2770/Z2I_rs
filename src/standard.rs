@@ -46,8 +46,9 @@ impl StandardJudge {
     }
 
     pub fn check_win(&self, board: &Board, last_move: i16) -> bool {
+        // no move played yet (empty board or invalid index): nothing to check
         if last_move < 0 {
-            return last_move == -1;
+            return false;
         }
         let n = board.len();
         if n == 0 {
@@ -119,5 +120,14 @@ mod tests {
         let last_move = (r * n + 5) as i16;
         let judge = StandardJudge::new();
         assert!(!judge.check_win(&board, last_move));
+    }
+
+    #[test]
+    fn standard_no_win_on_empty_board() {
+        let n = 15;
+        let board = vec![vec![Color::Blank; n]; n];
+        let judge = StandardJudge::new();
+        assert!(!judge.check_win(&board, -1));
+        assert!(!judge.check_win(&board, -2));
     }
 }
