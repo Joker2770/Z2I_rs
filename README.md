@@ -1,5 +1,6 @@
 # Z2I_rs
 
+[![Release](https://github.com/Joker2770/Z2I_rs/actions/workflows/release.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/release.yml)
 [![Rust](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/rust.yml)
 [![Snap](https://github.com/Joker2770/Z2I_rs/actions/workflows/snap.yml/badge.svg)](https://github.com/Joker2770/Z2I_rs/actions/workflows/snap.yml)
 [![z2i-rs](https://snapcraft.io/z2i-rs/badge.svg)](https://snapcraft.io/z2i-rs)
