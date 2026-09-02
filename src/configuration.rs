@@ -7,7 +7,7 @@ pub mod cfg {
     pub const MIN_BOARD_SIZE: u8 = 3;
     pub const N_IN_ROW: u8 = 5;
     pub const C_PUCT: f32 = 2.5;
-    pub const C_VIRTUAL_LOSS: f64 = 1.0;
+    pub const C_VIRTUAL_LOSS: f64 = 3.0;
     pub const CHANNEL_SIZE: u8 = 3;
     // Colab T4: 16GB VRAM is ample, so inference batches can be larger
     // (few concurrent CPU instances, limited benefit but no harm)

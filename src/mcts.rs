@@ -67,7 +67,12 @@ impl MCTSNode {
         };
         let get_u = |v: usize, c_puct: f64| -> f64 {
             let vf = v as f64;
-            c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / (1.0 + vf)
+            // A node with 0 visits ignores virtual loss in Q (Q == 0 when v == 0), so the
+            // exploration term must also account for virtual loss: otherwise every simulation
+            // in a batch scores a 0-visit branch identically, picks the same one, and floods
+            // the inference queue with duplicate positions.
+            c_puct * self.prior_probs * ((sum_visits_from_parents + 1) as f64).sqrt()
+                / (1.0 + vf + virtual_loss)
         };
 
         let q = get_q(v, virtual_loss);
