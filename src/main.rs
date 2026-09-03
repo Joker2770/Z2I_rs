@@ -279,6 +279,7 @@ struct Brain {
     loaded_model_path: Option<PathBuf>,
     open_mind: bool,
     enable_ponder: bool,
+    random_ponder_batches_remaining: usize,
 }
 
 impl Brain {
@@ -298,6 +299,7 @@ impl Brain {
             config,
             neural_network: None,
             loaded_model_path: None,
+            random_ponder_batches_remaining: 0,
         }
     }
 
@@ -380,7 +382,17 @@ impl Brain {
         let action_size = game.get_action_size();
         self.game = Some(game);
         self.mcts = Some(self.new_mcts(action_size));
+        self.reset_random_ponder_budget();
         true
+    }
+
+    fn reset_random_ponder_budget(&mut self) {
+        let batch_size = if self.sim_per_batch_num > 0 {
+            self.sim_per_batch_num
+        } else {
+            cfg::DEFAULT_SIM_PER_BATCH_NUM
+        } as usize;
+        self.random_ponder_batches_remaining = self.simulation_num.div_ceil(batch_size);
     }
 
     /// Handle the `INFO rule <value>` command (it may arrive before or after START):
@@ -447,6 +459,9 @@ impl Brain {
             && let Some(m) = self.mcts.as_mut()
         {
             m.update_root_with_action(g, action);
+            if self.neural_network.is_none() {
+                self.reset_random_ponder_budget();
+            }
         } else {
             is_succeed = false;
         }
@@ -457,8 +472,15 @@ impl Brain {
     /// - game not started or already over: return immediately, don't burn CPU;
     /// - otherwise run `sims_per_batch` simulations concurrently. A batch boundary is a consistent
     ///   point of the search tree, so when the opponent's move arrives we at most wait for the
-    ///   current batch to finish (millisecond scale).
+    ///   current batch to finish (millisecond scale). Without a model, random MCTS is still
+    ///   allowed, but only for the configured simulation budget so the tree cannot grow forever.
     async fn ponder_batch(&mut self) {
+        if self.neural_network.is_none() {
+            if self.random_ponder_batches_remaining == 0 {
+                return;
+            }
+            self.random_ponder_batches_remaining -= 1;
+        }
         let (Some(game), Some(mcts)) = (self.game.as_mut(), self.mcts.as_ref()) else {
             return;
         };
@@ -471,6 +493,7 @@ impl Brain {
     /// Whether pondering is possible: a game exists and is still in progress.
     fn should_ponder(&mut self) -> bool {
         self.enable_ponder
+            && (self.neural_network.is_some() || self.random_ponder_batches_remaining > 0)
             && self
                 .game
                 .as_mut()
