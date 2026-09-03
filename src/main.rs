@@ -48,6 +48,24 @@ struct MctsConfig {
     num_sim_per_batch: u8,
     open_mind: bool,
     enable_ponder: bool,
+    #[serde(default = "default_time_reserve_ms")]
+    time_reserve_ms: u64,
+    #[serde(default = "default_single_sim_reserve_ms")]
+    single_sim_reserve_ms: u64,
+    #[serde(default = "default_final_move_reserve_ms")]
+    final_move_reserve_ms: u64,
+}
+
+fn default_time_reserve_ms() -> u64 {
+    cfg::TIME_RESERVE_MS
+}
+
+fn default_single_sim_reserve_ms() -> u64 {
+    cfg::SINGLE_SIM_RESERVE_MS
+}
+
+fn default_final_move_reserve_ms() -> u64 {
+    cfg::FINAL_MOVE_RESERVE_MS
 }
 
 #[derive(Debug, Deserialize)]
@@ -80,6 +98,9 @@ impl Default for AppConfig {
                 num_sim_per_batch: cfg::DEFAULT_SIM_PER_BATCH_NUM,
                 open_mind: false,
                 enable_ponder: true,
+                time_reserve_ms: cfg::TIME_RESERVE_MS,
+                single_sim_reserve_ms: cfg::SINGLE_SIM_RESERVE_MS,
+                final_move_reserve_ms: cfg::FINAL_MOVE_RESERVE_MS,
             },
             onnx: OnnxruntimeConfig {
                 num_intra_thread: cfg::DEFAULT_INTRA_THREAD_NUM,
@@ -253,13 +274,16 @@ impl Brain {
     }
 
     fn new_mcts(&self, action_size: u16) -> MCTS {
-        MCTS::new(
+        MCTS::new_with_timing(
             self.neural_network.clone(),
             cfg::C_PUCT as f64,
             cfg::C_VIRTUAL_LOSS,
             AtomicUsize::new(self.simulation_num),
             self.sim_per_batch_num,
             action_size,
+            self.config.mcts.time_reserve_ms,
+            self.config.mcts.single_sim_reserve_ms,
+            self.config.mcts.final_move_reserve_ms,
         )
     }
 

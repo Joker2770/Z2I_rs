@@ -6,18 +6,39 @@
 # directory, then in the executable directory).
 
 [model]
+# Fallback model used when no rule-specific model is selected.
 default_model = "/path/to/your/weight.onnx"
+# Model for free-style Gomoku (rule 0).
 free_style_model = "/path/to/your/weight.onnx"
+# Model for Renju (rule 4).
 renju_model = "/path/to/your/weight.onnx"
+# Model for standard Gomoku (rule 1).
 standard_model = "/path/to/your/weight.onnx"
+# Model for Caro (rule 8).
 caro_model = "/path/to/your/weight.onnx"
+# Model for standard-Caro (combined rule 1|8).
 standard_caro_model = "/path/to/your/weight.onnx"
 
 [MCTS]
+# Total number of MCTS simulations for self-play and evaluation.
+# For protocol games, this is the upper bound when time permits.
 num_mct_sims = 400
+# Number of simulations submitted and evaluated as one inference batch.
+# Larger values can improve throughput but increase latency and memory use.
 num_sim_per_batch = 16
+# Print periodic search information while thinking.
 open_mind = false
+# Run background MCTS batches while waiting for the opponent.
 enable_ponder = true
+# Minimum remaining time (milliseconds) before starting a full batch.
+# Tune for the target machine and model; increase it on slower systems.
+time_reserve_ms = 1800
+# Minimum remaining time (milliseconds) before starting one final simulation.
+# Increase it if a single simulation is slow or the system is heavily loaded.
+single_sim_reserve_ms = 400
+# Time kept for applying and reporting the selected move (milliseconds).
+final_move_reserve_ms = 100
 
 [ONNXRUNTIME]
+# Number of intra-op ONNX Runtime threads used for each inference session.
 num_intra_thread = 4

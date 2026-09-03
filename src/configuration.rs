@@ -57,9 +57,13 @@ pub mod cfg {
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
     pub const TEMP_DECAY: u8 = 12;
-    // thinking-time reserve threshold (ms): stop simulations and move immediately
-    // when the remaining time drops below this value
-    pub const TIME_RESERVE_MS: u64 = 512;
+    // minimum remaining time (ms) required before starting a full inference batch;
+    // keep a margin above the measured ~1.3s batch time on the reference CPU
+    pub const TIME_RESERVE_MS: u64 = 1800;
+    // minimum remaining time (ms) required before starting one final simulation
+    pub const SINGLE_SIM_RESERVE_MS: u64 = 400;
+    // time (ms) kept for applying and reporting the selected move
+    pub const FINAL_MOVE_RESERVE_MS: u64 = 100;
     pub const RENDER_AT_EVAL: bool = true;
     // whether self-play (training data generation) renders the board step by step
     // and prints temp/Step; keep false for parallel generation to avoid interleaved
@@ -73,5 +77,5 @@ pub mod cfg {
     // max children kept in open_mind thinking output (filtered by visit count)
     pub const OPEN_MIND_THINKING_MAX_CHILDREN: usize = 10;
 
-    pub const INFER_ASYNC: bool = true;
+    pub const INFER_ASYNC: bool = false;
 }

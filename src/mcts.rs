@@ -153,6 +153,14 @@ impl MCTSNode {
     }
 }
 
+struct TimingStats {
+    batch_average: Duration,
+    single_average: Duration,
+    batch_minimum: Duration,
+    single_minimum: Duration,
+    final_move_reserve: Duration,
+}
+
 pub struct MCTS {
     root: RefCell<Rc<MCTSNode>>,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
@@ -164,6 +172,7 @@ pub struct MCTS {
     /// Serializes reads/writes of the search tree (select descent / expand / backpropagate),
     /// so concurrent simulation tasks cannot race on select. The lock must not be held across `.await`.
     tree_lock: Mutex<()>,
+    timing: Mutex<TimingStats>,
 }
 
 impl MCTS {
@@ -174,6 +183,30 @@ impl MCTS {
         simulation_num: AtomicUsize,
         sim_per_batch_num: u8,
         action_size: u16,
+    ) -> Self {
+        Self::new_with_timing(
+            neural_network,
+            c_puct,
+            c_virtual_loss,
+            simulation_num,
+            sim_per_batch_num,
+            action_size,
+            cfg::TIME_RESERVE_MS,
+            cfg::SINGLE_SIM_RESERVE_MS,
+            cfg::FINAL_MOVE_RESERVE_MS,
+        )
+    }
+
+    pub fn new_with_timing(
+        neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
+        c_puct: f64,
+        c_virtual_loss: f64,
+        simulation_num: AtomicUsize,
+        sim_per_batch_num: u8,
+        action_size: u16,
+        time_reserve_ms: u64,
+        single_sim_reserve_ms: u64,
+        final_move_reserve_ms: u64,
     ) -> Self {
         let sims_per_batch = if sim_per_batch_num > 0 {
             sim_per_batch_num
@@ -194,7 +227,66 @@ impl MCTS {
             c_virtual_loss,
             sims_per_batch,
             tree_lock: Mutex::new(()),
+            timing: Mutex::new(TimingStats {
+                batch_average: Duration::from_millis(time_reserve_ms),
+                single_average: Duration::from_millis(single_sim_reserve_ms),
+                batch_minimum: Duration::from_millis(time_reserve_ms),
+                single_minimum: Duration::from_millis(single_sim_reserve_ms),
+                final_move_reserve: Duration::from_millis(final_move_reserve_ms),
+            }),
         }
+    }
+
+    fn timing_reserve(
+        average: Duration,
+        minimum: Duration,
+        final_move_reserve: Duration,
+    ) -> Duration {
+        let estimate_ms = average.as_millis().min(u64::MAX as u128) as u64;
+        let safe_ms = estimate_ms
+            .saturating_mul(5)
+            .saturating_div(4)
+            .saturating_add(final_move_reserve.as_millis().min(u64::MAX as u128) as u64);
+        Duration::from_millis(safe_ms).max(minimum)
+    }
+
+    fn batch_reserve(&self) -> Duration {
+        let timing = self.timing.lock().unwrap_or_else(|e| e.into_inner());
+        Self::timing_reserve(
+            timing.batch_average,
+            timing.batch_minimum,
+            timing.final_move_reserve,
+        )
+    }
+
+    fn single_reserve(&self) -> Duration {
+        let timing = self.timing.lock().unwrap_or_else(|e| e.into_inner());
+        Self::timing_reserve(
+            timing.single_average,
+            timing.single_minimum,
+            timing.final_move_reserve,
+        )
+    }
+
+    fn record_duration(average: &mut Duration, sample: Duration) {
+        let old_ms = average.as_millis();
+        let sample_ms = sample.as_millis();
+        let next_ms = old_ms
+            .saturating_mul(3)
+            .saturating_add(sample_ms)
+            .saturating_div(4)
+            .max(1);
+        *average = Duration::from_millis(next_ms.min(u64::MAX as u128) as u64);
+    }
+
+    fn record_batch_duration(&self, elapsed: Duration) {
+        let mut timing = self.timing.lock().unwrap_or_else(|e| e.into_inner());
+        Self::record_duration(&mut timing.batch_average, elapsed);
+    }
+
+    fn record_single_duration(&self, elapsed: Duration) {
+        let mut timing = self.timing.lock().unwrap_or_else(|e| e.into_inner());
+        Self::record_duration(&mut timing.single_average, elapsed);
     }
 
     pub fn set_simulation_num(&mut self, sims_num: usize) -> bool {
@@ -246,10 +338,10 @@ impl MCTS {
 
     /// Run as many simulation batches as possible before the deadline:
     /// - `deadline` is `None`: run the configured number of simulations;
-    /// - if the remaining time cannot fit one batch, run a single simulation (so the root
-    ///   is expanded and a reasonable move can be chosen) and return immediately;
-    /// - otherwise stop simulating when the time left before each batch is less than
-    ///   `TIME_RESERVE_MS` milliseconds.
+    /// - start a full batch only when enough time remains for the batch reserve;
+    /// - when a full batch no longer fits, run at most one final simulation if the
+    ///   single-simulation reserve is still available;
+    /// - otherwise preserve the current tree and let the caller select a legal move.
     pub async fn get_action_probs_within(
         &self,
         gomoku: &Gomoku,
@@ -398,25 +490,24 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        // Not enough time for one batch (e.g. timeout_turn=0 means move as soon as possible):
-        // skip waiting for a whole batch and run a single simulation instead. One simulation is
-        // enough to expand the root (obtaining network priors and one visit), and a reasonable
-        // move can still be picked by PUCT/visit count afterwards; response time shrinks from a
-        // whole batch (hundreds of ms or more in debug builds) to a single inference.
-        if let Some(deadline) = deadline
-            && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
-        {
-            self.simulation(gomoku).await;
-            return;
-        }
-        for batches_done in 0..sim_batch {
-            if batches_done > 0
-                && let Some(deadline) = deadline
-                && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
-            {
-                break;
+        for _ in 0..sim_batch {
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining <= self.single_reserve() {
+                    break;
+                }
+                if remaining <= self.batch_reserve() {
+                    // A single simulation can still improve an existing tree, but it is not
+                    // safely cancellable, so never start more than one in this reserve window.
+                    let started = Instant::now();
+                    self.simulation(gomoku).await;
+                    self.record_single_duration(started.elapsed());
+                    break;
+                }
             }
+            let started = Instant::now();
             self.simulation_batch(gomoku).await;
+            self.record_batch_duration(started.elapsed());
         }
     }
 
@@ -433,22 +524,23 @@ impl MCTS {
             .simulation_num
             .load(Ordering::Relaxed)
             .div(self.sims_per_batch as usize);
-        // same fast path as `simulation_within`: run a single simulation when out of time.
-        if let Some(deadline) = deadline
-            && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
-        {
-            self.simulation(gomoku).await;
-            return;
-        }
         let mut next_report = Instant::now() + report_interval;
-        for batches_done in 0..sim_batch {
-            if batches_done > 0
-                && let Some(deadline) = deadline
-                && Instant::now() + Duration::from_millis(cfg::TIME_RESERVE_MS) >= deadline
-            {
-                break;
+        for _ in 0..sim_batch {
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining <= self.single_reserve() {
+                    break;
+                }
+                if remaining <= self.batch_reserve() {
+                    let started = Instant::now();
+                    self.simulation(gomoku).await;
+                    self.record_single_duration(started.elapsed());
+                    break;
+                }
             }
+            let started = Instant::now();
             self.simulation_batch(gomoku).await;
+            self.record_batch_duration(started.elapsed());
             if Instant::now() >= next_report {
                 report(self);
                 next_report = Instant::now() + report_interval;
@@ -794,7 +886,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn past_deadline_runs_single_simulation() {
+    async fn past_deadline_skips_unbounded_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
         let mcts = MCTS::new(
             None,
@@ -806,15 +898,14 @@ mod tests {
         );
 
         let deadline = Instant::now();
-        let probs = mcts
+        let _ = mcts
             .get_action_probs_within(&game, 1.0, Some(deadline))
             .await;
 
-        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
-        // when out of time, skip the full batch, run one simulation and return
-        // immediately (fast response)
+        // when out of time, skip any simulation that cannot be safely cancelled
+        // and let the caller select a legal fallback
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
-        assert_eq!(root_visits, 1);
+        assert_eq!(root_visits, 0);
     }
 
     #[tokio::test]

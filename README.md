@@ -68,16 +68,27 @@ caro_model = "models/caro_15x15_532.onnx"
 standard_caro_model = "models/standard_caro_15x15_533.onnx"
 
 [MCTS]
-# Number of MCTS simulations
+# Total number of MCTS simulations for self-play and evaluation.
+# For protocol games, this is the upper bound when time permits.
 num_mct_sims = 500
-# Number of async tasks to simulations
+# Number of simulations submitted and evaluated as one inference batch.
+# Larger values can improve throughput but increase latency and memory use.
 num_sim_per_batch = 8
-# Output information of action searching at thinking
+# Print periodic search information while thinking.
 open_mind = true
-# Enable background pondering while waiting for the opponent (default: true)
+# Run background MCTS batches while waiting for the opponent.
 enable_ponder = true
+# Minimum remaining time (milliseconds) before starting a full batch.
+# Tune for the target machine and model; increase it on slower systems.
+time_reserve_ms = 1800
+# Minimum remaining time (milliseconds) before starting one final simulation.
+# Increase it if a single simulation is slow or the system is heavily loaded.
+single_sim_reserve_ms = 400
+# Time kept for applying and reporting the selected move (milliseconds).
+final_move_reserve_ms = 100
 
 [ONNXRUNTIME]
+# Number of intra-op ONNX Runtime threads used for each inference session.
 num_intra_thread = 4
 ```
 
