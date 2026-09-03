@@ -171,8 +171,16 @@ fn train(
         let mut batches = 0;
         for batch in samples.chunks(batch_size) {
             let (board, policy, value) = make_batch(batch)?;
-            let inputs = ort::inputs! { board_name => board };
+            // ORT's `TrainStep` expects exactly one OrtValue per user input
+            // (here `board`, `target_p`, `target_v`). ort 2.0.0-rc.13's
+            // `Trainer::step` concatenates the expanded entries of `inputs`
+            // and `labels` when both are maps, which would produce 2N entries,
+            // so pass every user input in the labels map and an empty inputs
+            // slice: the ValueSlice+ValueMap branch yields exactly N entries
+            // matched by name.
+            let inputs: &[ort::session::SessionInputValue<'_>] = &[];
             let labels = ort::inputs! {
+                board_name => board,
                 policy_name => policy,
                 value_name => value,
             };
