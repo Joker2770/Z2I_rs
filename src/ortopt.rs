@@ -35,7 +35,6 @@ struct InferenceTask {
     response: Sender<InferenceOutput>,
 }
 
-#[derive(Debug)]
 pub struct NeuralNetwork {
     request_sender: tokio_mpsc::UnboundedSender<InferenceTask>,
 }
@@ -87,13 +86,23 @@ impl NeuralNetwork {
         thread::Builder::new()
             .name("onnx-inference".to_string())
             .spawn(move || {
-                runtime.block_on(inference_loop(
-                    session,
-                    &input_names,
-                    &output_names,
-                    worker_batch_size,
-                    request_receiver,
-                ));
+                if cfg::INFER_ASYNC {
+                    runtime.block_on(inference_loop_async(
+                        session,
+                        &input_names,
+                        &output_names,
+                        worker_batch_size,
+                        request_receiver,
+                    ));
+                } else {
+                    runtime.block_on(inference_loop_sync(
+                        session,
+                        &input_names,
+                        &output_names,
+                        worker_batch_size,
+                        request_receiver,
+                    ));
+                }
             })?;
 
         let nn = NeuralNetwork { request_sender };
@@ -173,7 +182,7 @@ impl NeuralNetwork {
     }
 }
 
-async fn inference_loop(
+async fn inference_loop_async(
     mut session: Session,
     input_node_names: &[String],
     output_names: &[String],
@@ -258,6 +267,94 @@ async fn infer_batch_async(
         .map_err(|error| error.to_string())?;
     assert_eq!(output_names[0].as_str(), "P");
     assert_eq!(output_names[1].as_str(), "V");
+    parse_outputs(outputs, output_names, batch_size)
+}
+
+async fn inference_loop_sync(
+    mut session: Session,
+    input_node_names: &[String],
+    output_names: &[String],
+    batch_size: Arc<AtomicUsize>,
+    mut request_receiver: tokio_mpsc::UnboundedReceiver<InferenceTask>,
+) {
+    loop {
+        let first = match request_receiver.recv().await {
+            Some(task) => task,
+            None => return,
+        };
+        let mut tasks = vec![first];
+        let max_batch_size = batch_size.load(Ordering::Relaxed);
+        while tasks.len() < max_batch_size {
+            match timeout(
+                Duration::from_micros(cfg::INFER_TASK_WAIT_US as u64),
+                request_receiver.recv(),
+            )
+            .await
+            {
+                Ok(Some(task)) => tasks.push(task),
+                _ => break,
+            }
+        }
+
+        let states = tasks
+            .iter()
+            .flat_map(|task| task.state.iter().copied())
+            .collect();
+        let result = infer_batch_sync(
+            &mut session,
+            input_node_names,
+            output_names,
+            states,
+            tasks.len(),
+        );
+        match result {
+            Ok(outputs) => {
+                for (task, output) in tasks.into_iter().zip(outputs) {
+                    let _ = task.response.send(Ok(output));
+                }
+            }
+            Err(error) => {
+                for task in tasks {
+                    let _ = task.response.send(Err(error.clone()));
+                }
+            }
+        }
+    }
+}
+
+fn infer_batch_sync(
+    session: &mut Session,
+    input_node_names: &[String],
+    output_names: &[String],
+    state_all: Vec<f32>,
+    batch_size: usize,
+) -> Result<Vec<(Vec<f64>, f64)>, String> {
+    let input_arr = Array::from_shape_vec(
+        (
+            batch_size,
+            cfg::CHANNEL_SIZE as usize,
+            cfg::BOARD_SIZE as usize,
+            cfg::BOARD_SIZE as usize,
+        ),
+        state_all,
+    )
+    .map_err(|error| error.to_string())?;
+    let inputs = ort::inputs! {
+        &input_node_names[0] => TensorRef::from_array_view(&input_arr)
+            .map_err(|error| error.to_string())?
+    };
+    let outputs = session.run(inputs).map_err(|error| error.to_string())?;
+    parse_outputs(outputs, output_names, batch_size)
+}
+
+fn parse_outputs(
+    outputs: SessionOutputs,
+    output_names: &[String],
+    batch_size: usize,
+) -> Result<Vec<(Vec<f64>, f64)>, String> {
+    let action_size = cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize;
+    assert_eq!(output_names[0].as_str(), "P");
+    assert_eq!(output_names[1].as_str(), "V");
     let v_arr = outputs[output_names[1].as_str()]
         .try_extract_array::<f32>()
         .map_err(|error| error.to_string())?
@@ -268,7 +365,6 @@ async fn infer_batch_async(
         .into_owned();
     let v_vec = v_arr.iter().collect::<Vec<&f32>>();
     let p_vec = p_arr.iter().collect::<Vec<&f32>>();
-    let action_size = cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize;
 
     if v_vec.len() < batch_size || p_vec.len() < batch_size * action_size {
         return Err(format!(

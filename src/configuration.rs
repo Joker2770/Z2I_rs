@@ -72,4 +72,6 @@ pub mod cfg {
     pub const OPEN_MIND_REPORT_INTERVAL_MS: u64 = 500;
     // max children kept in open_mind thinking output (filtered by visit count)
     pub const OPEN_MIND_THINKING_MAX_CHILDREN: usize = 10;
+
+    pub const INFER_ASYNC: bool = true;
 }
