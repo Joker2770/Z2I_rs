@@ -1,4 +1,3 @@
-
 #![deny(deprecated)]
 
 use ndarray::{Array2, Array4};
@@ -99,6 +98,16 @@ fn load_data(directory: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
     Ok(samples)
 }
 
+#[inline]
+fn player_channels(current_player: i32, stone: i32) -> (f32, f32) {
+    // `current_player` and `stone` are both +1 (Black) / -1 (White) / 0 (empty),
+    // so their product is positive when the stone belongs to the current player
+    // and negative when it belongs to the opponent.
+    let own = if current_player * stone > 0 { 1.0 } else { 0.0 };
+    let opponent = if current_player * stone < 0 { 1.0 } else { 0.0 };
+    (own, opponent)
+}
+
 fn make_batch(
     samples: &[Sample],
 ) -> Result<(Tensor<f32>, Tensor<f32>, Tensor<f32>), Box<dyn Error>> {
@@ -108,24 +117,16 @@ fn make_batch(
 
     for (batch_index, sample) in samples.iter().enumerate() {
         for position in 0..ACTION_SIZE {
-            let channel = if sample.current_player == -1 {
-                if sample.board[position] > 0 { 1 } else { 0 }
-            } else if sample.board[position] < 0 {
-                1
-            } else {
-                0
-            };
-            let other_channel = if sample.current_player == -1 {
-                if sample.board[position] < 0 { 1 } else { 0 }
-            } else if sample.board[position] > 0 {
-                1
-            } else {
-                0
-            };
+            // Channel 0 holds the current player's own stones and channel 1 the
+            // opponent's stones, matching the inference-side transform in
+            // ortopt.rs and the Python trainer (_data_convert): the board is
+            // always encoded from the mover's perspective.
+            let (own_channel, opponent_channel) =
+                player_channels(sample.current_player, sample.board[position]);
             let row = position / BOARD_SIZE;
             let column = position % BOARD_SIZE;
-            states[[batch_index, 0, row, column]] = channel as f32;
-            states[[batch_index, 1, row, column]] = other_channel as f32;
+            states[[batch_index, 0, row, column]] = own_channel;
+            states[[batch_index, 1, row, column]] = opponent_channel;
             policies[[batch_index, position]] = sample.policy[position];
         }
         if (0..ACTION_SIZE as i32).contains(&sample.last_action) {
@@ -221,4 +222,22 @@ fn main() -> Result<(), Box<dyn Error>> {
         args.get(8).map_or("target_p", String::as_str),
         args.get(9).map_or("target_v", String::as_str),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::player_channels;
+
+    #[test]
+    fn channel_zero_holds_own_stones_for_both_players() {
+        // Black to move: own = Black (+1), opponent = White (-1).
+        assert_eq!(player_channels(1, 1), (1.0, 0.0));
+        assert_eq!(player_channels(1, -1), (0.0, 1.0));
+        assert_eq!(player_channels(1, 0), (0.0, 0.0));
+
+        // White to move: own = White (-1), opponent = Black (+1).
+        assert_eq!(player_channels(-1, -1), (1.0, 0.0));
+        assert_eq!(player_channels(-1, 1), (0.0, 1.0));
+        assert_eq!(player_channels(-1, 0), (0.0, 0.0));
+    }
 }
