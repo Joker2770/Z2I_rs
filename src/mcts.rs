@@ -71,8 +71,7 @@ impl MCTSNode {
             // exploration term must also account for virtual loss: otherwise every simulation
             // in a batch scores a 0-visit branch identically, picks the same one, and floods
             // the inference queue with duplicate positions.
-            c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt()
-                / (1.0 + vf + v_l)
+            c_puct * self.prior_probs * (sum_visits_from_parents as f64).sqrt() / (1.0 + vf + v_l)
         };
 
         let q = get_q(v, virtual_loss);
@@ -339,9 +338,9 @@ impl MCTS {
     /// Run as many simulation batches as possible before the deadline:
     /// - `deadline` is `None`: run the configured number of simulations;
     /// - start a full batch only when enough time remains for the batch reserve;
-    /// - when a full batch no longer fits, run at most one final simulation if the
-    ///   single-simulation reserve is still available;
-    /// - otherwise preserve the current tree and let the caller select a legal move.
+    /// - when a full batch no longer fits, run at most one final simulation;
+    /// - the first simulation is always started for a finite deadline, including
+    ///   `timeout_turn 0`, because a move must still be based on a searched tree.
     pub async fn get_action_probs_within(
         &self,
         gomoku: &Gomoku,
@@ -489,25 +488,34 @@ impl MCTS {
         let sim_batch = self
             .simulation_num
             .load(Ordering::Relaxed)
-            .div(self.sims_per_batch as usize);
-        for _ in 0..sim_batch {
+            .div(self.sims_per_batch as usize)
+            .max(1);
+        let target_simulations = sim_batch * self.sims_per_batch as usize;
+        let mut completed_simulations = 0;
+        while completed_simulations < target_simulations {
             if let Some(deadline) = deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining <= self.single_reserve() {
+                if completed_simulations > 0 && remaining <= self.single_reserve() {
                     break;
                 }
                 if remaining <= self.batch_reserve() {
-                    // A single simulation can still improve an existing tree, but it is not
-                    // safely cancellable, so never start more than one in this reserve window.
+                    // A single simulation is not safely cancellable, but the first one is
+                    // mandatory even when the deadline has already reached its reserve. When a
+                    // full batch no longer fits, keep using single simulations while safe time
+                    // remains instead of stopping after the first one.
                     let started = Instant::now();
                     self.simulation(gomoku).await;
                     self.record_single_duration(started.elapsed());
-                    break;
+                    completed_simulations += 1;
+                    continue;
                 }
             }
+            let batch_size = self.sims_per_batch;
             let started = Instant::now();
-            self.simulation_batch(gomoku).await;
+            let simulations = (0..batch_size).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
             self.record_batch_duration(started.elapsed());
+            completed_simulations += batch_size as usize;
         }
     }
 
@@ -523,24 +531,35 @@ impl MCTS {
         let sim_batch = self
             .simulation_num
             .load(Ordering::Relaxed)
-            .div(self.sims_per_batch as usize);
+            .div(self.sims_per_batch as usize)
+            .max(1);
+        let target_simulations = sim_batch * self.sims_per_batch as usize;
+        let mut completed_simulations = 0;
         let mut next_report = Instant::now() + report_interval;
-        for _ in 0..sim_batch {
+        while completed_simulations < target_simulations {
             if let Some(deadline) = deadline {
                 let remaining = deadline.saturating_duration_since(Instant::now());
-                if remaining <= self.single_reserve() {
+                if completed_simulations > 0 && remaining <= self.single_reserve() {
                     break;
                 }
                 if remaining <= self.batch_reserve() {
                     let started = Instant::now();
                     self.simulation(gomoku).await;
                     self.record_single_duration(started.elapsed());
-                    break;
+                    completed_simulations += 1;
+                    if Instant::now() >= next_report {
+                        report(self);
+                        next_report = Instant::now() + report_interval;
+                    }
+                    continue;
                 }
             }
+            let batch_size = self.sims_per_batch;
             let started = Instant::now();
-            self.simulation_batch(gomoku).await;
+            let simulations = (0..batch_size).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
             self.record_batch_duration(started.elapsed());
+            completed_simulations += batch_size as usize;
             if Instant::now() >= next_report {
                 report(self);
                 next_report = Instant::now() + report_interval;
@@ -886,7 +905,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn past_deadline_skips_unbounded_simulation() {
+    async fn past_deadline_still_runs_one_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
         let mcts = MCTS::new(
             None,
@@ -902,10 +921,30 @@ mod tests {
             .get_action_probs_within(&game, 1.0, Some(deadline))
             .await;
 
-        // when out of time, skip any simulation that cannot be safely cancelled
-        // and let the caller select a legal fallback
+        // Even an expired deadline must perform the mandatory first simulation.
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
-        assert_eq!(root_visits, 0);
+        assert_eq!(root_visits, 1);
+    }
+
+    #[tokio::test]
+    async fn short_deadline_still_runs_one_simulation() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(2048),
+            cfg::DEFAULT_SIM_PER_BATCH_NUM,
+            game.get_action_size(),
+        );
+
+        for remaining in [0, 100] {
+            let deadline = Instant::now() + Duration::from_millis(remaining);
+            mcts.simulation_within(&game, Some(deadline)).await;
+            let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
+            assert!(root_visits >= 1);
+            *mcts.root.borrow_mut() = Rc::new(MCTSNode::new());
+        }
     }
 
     #[tokio::test]

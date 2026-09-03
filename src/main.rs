@@ -61,12 +61,24 @@ impl Default for ModelConfig {
     }
 }
 
-fn default_model_path() -> PathBuf { PathBuf::from("models/default.onnx") }
-fn default_free_style_model_path() -> PathBuf { PathBuf::from("models/free-style.onnx") }
-fn default_renju_model_path() -> PathBuf { PathBuf::from("models/renju.onnx") }
-fn default_standard_model_path() -> PathBuf { PathBuf::from("models/standard.onnx") }
-fn default_caro_model_path() -> PathBuf { PathBuf::from("models/caro.onnx") }
-fn default_standard_caro_model_path() -> PathBuf { PathBuf::from("models/standard-caro.onnx") }
+fn default_model_path() -> PathBuf {
+    PathBuf::from("models/default.onnx")
+}
+fn default_free_style_model_path() -> PathBuf {
+    PathBuf::from("models/free-style.onnx")
+}
+fn default_renju_model_path() -> PathBuf {
+    PathBuf::from("models/renju.onnx")
+}
+fn default_standard_model_path() -> PathBuf {
+    PathBuf::from("models/standard.onnx")
+}
+fn default_caro_model_path() -> PathBuf {
+    PathBuf::from("models/caro.onnx")
+}
+fn default_standard_caro_model_path() -> PathBuf {
+    PathBuf::from("models/standard-caro.onnx")
+}
 
 #[derive(Debug, Deserialize)]
 struct MctsConfig {
@@ -796,9 +808,15 @@ mod tests {
         )
         .expect("partial config should deserialize with defaults");
 
-        assert_eq!(config.model.default_model, PathBuf::from("models/default.onnx"));
+        assert_eq!(
+            config.model.default_model,
+            PathBuf::from("models/default.onnx")
+        );
         assert_eq!(config.mcts.num_mct_sims, 123);
-        assert_eq!(config.mcts.num_sim_per_batch, cfg::DEFAULT_SIM_PER_BATCH_NUM);
+        assert_eq!(
+            config.mcts.num_sim_per_batch,
+            cfg::DEFAULT_SIM_PER_BATCH_NUM
+        );
         assert_eq!(config.onnx.num_intra_thread, cfg::DEFAULT_INTRA_THREAD_NUM);
     }
 
