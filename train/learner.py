@@ -1,15 +1,13 @@
 from collections import deque
-from os import path, mkdir
+from os import path
 import os
-import sys
-import torch
-import numpy as np
-from common import config
-# import pickle
-# import concurrent.futures
 import random
-# from functools import reduce
+import sys
 
+import numpy as np
+import torch
+
+from common import config
 from neural_network import NeuralNetWorkWrapper
 
 # training work dir: build/ under the repo root by default, overridable via BUILD_DIR;
@@ -61,10 +59,9 @@ def select_replay_files(data_dir, backup_dir, window_files):
 
 class Learner():
     def __init__(self, config):
-        # gomoku
+        """Create the trainer from the shared training configuration."""
         self.n = config['n']
         self.n_in_row = config['n_in_row']
-        # self.gomoku_gui = GomokuGUI(config['n'], config['human_color'])
         self.action_size = config['action_size']
 
         # train
@@ -89,15 +86,12 @@ class Learner():
                                          config['num_channels'], config['n'],
                                          self.action_size, config['input_channel_size'])
 
-        # start gui
-        # t = threading.Thread(target=self.gomoku_gui.loop)
-        # t.start()
-
-    def learn(self, model_dir,model_id):
-        # train the model by self play
-
+    def learn(self, model_dir, model_id):
+        """Train one model generation and archive its consumed self-play data."""
         model_path = path.join(model_dir, str(model_id))
-        assert path.exists(model_path+'.pkl'),f"{model_path+'.pkl'} does not exist!!!"
+        model_file = model_path + '.pkl'
+        if not path.exists(model_file):
+            raise FileNotFoundError(f"{model_file} does not exist")
         print(f"loading {model_id}-th model")
         self.nnet.load_model(model_path)
 
@@ -108,21 +102,6 @@ class Learner():
                 lr *= config['lr_gamma']
         self.nnet.set_learning_rate(lr)
         print(f"learning rate: {lr}")
-
-        # model_id = 0
-        # if model_dir==None:
-        #     print("debug mode: best_model_dir = join('..','build','weights', str(model_id))")
-        #     model_dir = path.join('..','build','weights')
-        # model_path = path.join(model_dir, str(model_id))
-        # if path.exists(model_path+'.pkl'):
-        #     print(f"loading {model_id}-th model")
-        #     self.nnet.load_model(model_path)
-        #     #self.load_samples()
-        # else:
-        #     print("prepare: save 0-th model")
-        #     # save torchscript
-        #     # self.nnet.save_model()
-        #     self.nnet.save_model(model_path)
 
         # replay window: train on the most recent N iterations of data from data/ and
         # data_backup/ combined (AlphaZero replay)
@@ -135,11 +114,13 @@ class Learner():
               f"{config['games_per_iter']} games = {window_files} files, "
               f"selected {len(replay_files)}")
         train_data = self.load_samples(replay_files)
+        if not train_data:
+            raise RuntimeError("no valid training samples found in the replay window")
         random.shuffle(train_data)
 
         # train neural network
         epochs = self.epochs * (len(train_data) + self.batch_size - 1) // self.batch_size
-        self.nnet.train(train_data, min(self.batch_size,len(train_data)), int(epochs))
+        self.nnet.train(train_data, min(self.batch_size, len(train_data)), epochs)
 
         model_path = path.join(model_dir, str(model_id+1))
         self.nnet.save_model(model_path)
@@ -150,14 +131,8 @@ class Learner():
         # post-training archiving: move the newly generated files from data/ to data_backup/
         # for later replay; then filter all of data_backup/ by the replay window, moving
         # out-of-window history to data_archive/ for retention
-        try:
-            mkdir(data_backup_path)
-        except FileExistsError:
-            pass
-        try:
-            mkdir(data_archive_path)
-        except FileExistsError:
-            pass
+        os.makedirs(data_backup_path, exist_ok=True)
+        os.makedirs(data_archive_path, exist_ok=True)
         for file_name in os.listdir(data_path):
             try:
                 os.rename(path.join(data_path, file_name),

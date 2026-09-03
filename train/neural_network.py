@@ -1,26 +1,24 @@
-# -*- coding: utf-8 -*-
-# import sys
 import os
-
 import torch
 import torch.nn as nn
 from torch.optim import Adam
-# from torch.autograd import Variable
-# import torch.nn.functional as F
-
 import numpy as np
+
 from common import config
 
+
 def conv3x3(in_channels, out_channels, stride=1):
-    # 3x3 convolution
-    return nn.Conv2d(in_channels, out_channels, kernel_size=3,
-                     stride=stride, padding=1, bias=False)
+    """Create the 3x3 convolution used by every residual block."""
+    return nn.Conv2d(
+        in_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False
+    )
 
 
 class ResidualBlock(nn.Module):
-    # Residual block
+    """A two-convolution residual block with an optional projection shortcut."""
+
     def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
+        super().__init__()
         self.conv1 = conv3x3(in_channels, out_channels, stride)
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.relu = nn.ReLU(inplace=True)
@@ -52,15 +50,17 @@ class ResidualBlock(nn.Module):
 
 
 class NeuralNetWork(nn.Module):
-    """Policy and Value Network
-    """
+    """Policy and value network used by self-play and model training."""
 
-    def __init__(self, num_layers, num_channels, n, action_size,input_channel_size):
-        super(NeuralNetWork, self).__init__()
+    def __init__(self, num_layers, num_channels, n, action_size, input_channel_size):
+        super().__init__()
 
-        # residual block
-        res_list = [ResidualBlock(input_channel_size, num_channels)] + [ResidualBlock(num_channels, num_channels) for _ in range(num_layers - 1)]
-        self.res_layers = nn.Sequential(*res_list)
+        residual_blocks = [ResidualBlock(input_channel_size, num_channels)]
+        residual_blocks.extend(
+            ResidualBlock(num_channels, num_channels)
+            for _ in range(num_layers - 1)
+        )
+        self.res_layers = nn.Sequential(*residual_blocks)
 
         # policy head
         self.p_conv = nn.Conv2d(num_channels, 4, kernel_size=1, padding=0, bias=False)
@@ -104,31 +104,20 @@ class NeuralNetWork(nn.Module):
 
 
 class AlphaLoss(nn.Module):
-    """
-    Custom loss as defined in the paper :
-    (z - v) ** 2 --> MSE Loss
-    (-pi * logp) --> Cross Entropy Loss
-    z : self_play_winner
-    v : winner
-    pi : self_play_probas
-    p : probas
-
-    The loss is then averaged over the entire batch
-    """
+    """AlphaZero loss: value MSE plus cross-entropy against the visit policy."""
 
     def __init__(self):
-        super(AlphaLoss, self).__init__()
+        super().__init__()
 
     def forward(self, log_ps, vs, target_ps, target_vs):
         value_loss = torch.mean(torch.pow(vs - target_vs, 2))
-        policy_loss = -torch.mean(torch.sum(target_ps * log_ps, 1))
+        policy_loss = -torch.mean(torch.sum(target_ps * log_ps, dim=1))
 
         return value_loss + policy_loss
 
 
-class NeuralNetWorkWrapper():
-    """train and predict
-    """
+class NeuralNetWorkWrapper:
+    """Own the model, optimizer, device selection, and data conversion."""
 
     def __init__(self, lr, l2, num_layers, num_channels, n, action_size, input_channel_size=3):
         """ init
@@ -144,13 +133,15 @@ class NeuralNetWorkWrapper():
         else:
             self.is_cuda_available = False
 
-        if(self.is_cuda_available):
+        if self.is_cuda_available:
             print("Find and use GPU")
             print(torch.cuda.get_device_name(torch.cuda.current_device()))
         else:
             print("use CPU")
 
-        self.neural_network = NeuralNetWork(num_layers, num_channels, n, action_size, input_channel_size)
+        self.neural_network = NeuralNetWork(
+            num_layers, num_channels, n, action_size, input_channel_size
+        )
         if self.is_cuda_available:
             self.neural_network.cuda()
 
@@ -158,9 +149,7 @@ class NeuralNetWorkWrapper():
         self.alpha_loss = AlphaLoss()
 
     def train(self, example_buffer, batch_size, epochs):
-        """train neural network
-           epochs: total mini-batch update steps (sampling with replacement)
-        """
+        """Run mini-batch updates, sampling examples with replacement."""
         n_data = len(example_buffer)
         for epo in range(1, epochs + 1):
             self.neural_network.train()
@@ -170,7 +159,6 @@ class NeuralNetWorkWrapper():
             train_data = [example_buffer[i] for i in sample_idx]
 
 
-            # extract train data
             board_batch, last_action_batch, cur_player_batch, p_batch, v_batch = list(zip(*train_data))
 
             state_batch = self._data_convert(board_batch, last_action_batch, cur_player_batch)
@@ -180,10 +168,8 @@ class NeuralNetWorkWrapper():
             v_batch = torch.Tensor(v_batch).unsqueeze(
                 1).cuda() if self.is_cuda_available else torch.Tensor(v_batch).unsqueeze(1)
 
-            # zero the parameter gradients
             self.optim.zero_grad()
 
-            # forward + backward + optimize
             log_ps, vs = self.neural_network(state_batch)
             loss = self.alpha_loss(log_ps, vs, p_batch, v_batch)
 
@@ -199,34 +185,31 @@ class NeuralNetWorkWrapper():
                 print("EPOCH: {}/{}, LOSS: {}, ENTROPY: {}".format(epo, epochs, loss.item(), entropy))
 
     def infer(self, feature_batch):
-        """predict p and v by raw input
-           return numpy
-        """
+        """Predict policy probabilities and values for raw feature tuples."""
         board_batch, last_action_batch, cur_player_batch = list(zip(*feature_batch))
         states = self._data_convert(board_batch, last_action_batch, cur_player_batch)
 
         self.neural_network.eval()
-        log_ps, vs = self.neural_network(states)
+        with torch.no_grad():
+            log_ps, vs = self.neural_network(states)
 
         return np.exp(log_ps.cpu().detach().numpy()), vs.cpu().detach().numpy()
 
     def _infer(self, state_batch):
-        """predict p and v by state
-           return numpy object
-        """
-
+        """Predict policy probabilities and values for an encoded state tensor."""
         self.neural_network.eval()
-        log_ps, vs = self.neural_network(state_batch)
+        with torch.no_grad():
+            log_ps, vs = self.neural_network(state_batch)
 
         return np.exp(log_ps.cpu().detach().numpy()), vs.cpu().detach().numpy()
 
     def _data_convert(self, board_batch, last_action_batch, cur_player_batch):
-        """convert data format
-           return tensor
-        """
+        """Convert board features to [batch, 3, board, board] tensors."""
         n = self.n
 
-        board_batch = torch.Tensor(np.array(board_batch)).unsqueeze(1)
+        board_batch = torch.as_tensor(
+            np.asarray(board_batch), dtype=torch.float32
+        ).unsqueeze(1)
         state0 = (board_batch > 0).float()
         state1 = (board_batch < 0).float()
 
@@ -249,21 +232,16 @@ class NeuralNetWorkWrapper():
             ys = torch.from_numpy(pos % n)
             state2[rows, 0, xs, ys] = 1
 
-        res =  torch.cat((state0, state1, state2), dim=1)
-        # res = torch.cat((state0, state1), dim=1)
+        res = torch.cat((state0, state1, state2), dim=1)
         return res.cuda() if self.is_cuda_available else res
 
     def set_learning_rate(self, lr):
-        """set learning rate
-        """
-
+        """Update the learning rate for all optimizer parameter groups."""
         for param_group in self.optim.param_groups:
-            param_group['lr'] = lr
+            param_group["lr"] = lr
 
     def load_model(self, filepath):
-        """load model from file
-        """
-
+        """Load network and optimizer state from a path prefix."""
         if self.is_cuda_available:
             state = torch.load(filepath+'.pkl', weights_only=True)
         else:
@@ -275,8 +253,7 @@ class NeuralNetWorkWrapper():
 
 
     def save_model(self, filepath):
-        """save model to file
-        """
+        """Save network state and an inference ONNX model to a path prefix."""
         # remove old files with the same name before saving to avoid stale models
         for suffix in ('.pkl', '.onnx'):
             old_path = filepath + suffix
@@ -287,23 +264,22 @@ class NeuralNetWorkWrapper():
         torch.save(state, filepath+'.pkl')
 
 
-        # save torchscript or onnx
         self.neural_network.eval()
-
-        # if self.is_cuda_available:
-        #     self.neural_network.cuda()
-        #     example = torch.rand(1, self.input_channel_size, self.n, self.n).cuda()
-        # else:
-
         self.neural_network.cpu()
         example = torch.rand(1, self.input_channel_size, self.n, self.n).cpu()
-        dynamic_axes={"board":{0:"batch_size"},"P":{0:"batch_size"},"V":{0:"batch_size"}}
-        torch.onnx.export(self.neural_network,
-                          example,
-                          filepath+'.onnx',
-                          input_names=["board"],
-                          output_names=['P', 'V'],
-                          dynamic_axes=dynamic_axes)
+        dynamic_axes = {
+            "board": {0: "batch_size"},
+            "P": {0: "batch_size"},
+            "V": {0: "batch_size"},
+        }
+        torch.onnx.export(
+            self.neural_network,
+            example,
+            filepath + ".onnx",
+            input_names=["board"],
+            output_names=["P", "V"],
+            dynamic_axes=dynamic_axes,
+        )
 
         # restore the training device so that later reuse in the same process doesn't silently fall back to CPU
         if self.is_cuda_available:
