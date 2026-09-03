@@ -44,9 +44,13 @@ struct ModelConfig {
 
 #[derive(Debug, Deserialize)]
 struct MctsConfig {
+    #[serde(default = "default_num_mct_sims")]
     num_mct_sims: usize,
+    #[serde(default = "default_sim_per_batch_num")]
     num_sim_per_batch: u8,
+    #[serde(default = "default_open_mind")]
     open_mind: bool,
+    #[serde(default = "default_enable_ponder")]
     enable_ponder: bool,
     #[serde(default = "default_time_reserve_ms")]
     time_reserve_ms: u64,
@@ -54,6 +58,22 @@ struct MctsConfig {
     single_sim_reserve_ms: u64,
     #[serde(default = "default_final_move_reserve_ms")]
     final_move_reserve_ms: u64,
+}
+
+fn default_num_mct_sims() -> usize {
+    cfg::DEFAULT_SIMULATION_NUM
+}
+
+fn default_sim_per_batch_num() -> u8 {
+    cfg::DEFAULT_SIM_PER_BATCH_NUM
+}
+
+fn default_open_mind() -> bool {
+    false
+}
+
+fn default_enable_ponder() -> bool {
+    true
 }
 
 fn default_time_reserve_ms() -> u64 {
@@ -70,7 +90,12 @@ fn default_final_move_reserve_ms() -> u64 {
 
 #[derive(Debug, Deserialize)]
 struct OnnxruntimeConfig {
+    #[serde(default = "default_num_intra_thread")]
     num_intra_thread: u8,
+}
+
+fn default_num_intra_thread() -> u8 {
+    cfg::DEFAULT_INTRA_THREAD_NUM
 }
 
 #[derive(Debug, Deserialize)]
