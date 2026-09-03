@@ -34,13 +34,39 @@ use rule::{Color, RuleFlag};
 
 #[derive(Debug, Deserialize)]
 struct ModelConfig {
+    #[serde(default = "default_model_path")]
     default_model: PathBuf,
+    #[serde(default = "default_free_style_model_path")]
     free_style_model: PathBuf,
+    #[serde(default = "default_renju_model_path")]
     renju_model: PathBuf,
+    #[serde(default = "default_standard_model_path")]
     standard_model: PathBuf,
+    #[serde(default = "default_caro_model_path")]
     caro_model: PathBuf,
+    #[serde(default = "default_standard_caro_model_path")]
     standard_caro_model: PathBuf,
 }
+
+impl Default for ModelConfig {
+    fn default() -> Self {
+        Self {
+            default_model: default_model_path(),
+            free_style_model: default_free_style_model_path(),
+            renju_model: default_renju_model_path(),
+            standard_model: default_standard_model_path(),
+            caro_model: default_caro_model_path(),
+            standard_caro_model: default_standard_caro_model_path(),
+        }
+    }
+}
+
+fn default_model_path() -> PathBuf { PathBuf::from("models/default.onnx") }
+fn default_free_style_model_path() -> PathBuf { PathBuf::from("models/free-style.onnx") }
+fn default_renju_model_path() -> PathBuf { PathBuf::from("models/renju.onnx") }
+fn default_standard_model_path() -> PathBuf { PathBuf::from("models/standard.onnx") }
+fn default_caro_model_path() -> PathBuf { PathBuf::from("models/caro.onnx") }
+fn default_standard_caro_model_path() -> PathBuf { PathBuf::from("models/standard-caro.onnx") }
 
 #[derive(Debug, Deserialize)]
 struct MctsConfig {
@@ -58,6 +84,20 @@ struct MctsConfig {
     single_sim_reserve_ms: u64,
     #[serde(default = "default_final_move_reserve_ms")]
     final_move_reserve_ms: u64,
+}
+
+impl Default for MctsConfig {
+    fn default() -> Self {
+        Self {
+            num_mct_sims: default_num_mct_sims(),
+            num_sim_per_batch: default_sim_per_batch_num(),
+            open_mind: default_open_mind(),
+            enable_ponder: default_enable_ponder(),
+            time_reserve_ms: default_time_reserve_ms(),
+            single_sim_reserve_ms: default_single_sim_reserve_ms(),
+            final_move_reserve_ms: default_final_move_reserve_ms(),
+        }
+    }
 }
 
 fn default_num_mct_sims() -> usize {
@@ -94,16 +134,25 @@ struct OnnxruntimeConfig {
     num_intra_thread: u8,
 }
 
+impl Default for OnnxruntimeConfig {
+    fn default() -> Self {
+        Self {
+            num_intra_thread: default_num_intra_thread(),
+        }
+    }
+}
+
 fn default_num_intra_thread() -> u8 {
     cfg::DEFAULT_INTRA_THREAD_NUM
 }
 
 #[derive(Debug, Deserialize)]
 struct AppConfig {
+    #[serde(default)]
     model: ModelConfig,
-    #[serde(rename = "MCTS")]
+    #[serde(rename = "MCTS", default)]
     mcts: MctsConfig,
-    #[serde(rename = "ONNXRUNTIME")]
+    #[serde(rename = "ONNXRUNTIME", default)]
     onnx: OnnxruntimeConfig,
 }
 
@@ -712,6 +761,22 @@ mod tests {
         let mut brain = test_brain();
         brain.timeout_turn = Some(60_000);
         assert!(brain.think_deadline().expect("deadline should be set") > Instant::now());
+    }
+
+    #[test]
+    fn partial_config_keeps_defaults_for_missing_sections() {
+        let config: AppConfig = toml::from_str(
+            r#"
+            [MCTS]
+            num_mct_sims = 123
+            "#,
+        )
+        .expect("partial config should deserialize with defaults");
+
+        assert_eq!(config.model.default_model, PathBuf::from("models/default.onnx"));
+        assert_eq!(config.mcts.num_mct_sims, 123);
+        assert_eq!(config.mcts.num_sim_per_batch, cfg::DEFAULT_SIM_PER_BATCH_NUM);
+        assert_eq!(config.onnx.num_intra_thread, cfg::DEFAULT_INTRA_THREAD_NUM);
     }
 
     #[test]
