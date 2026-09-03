@@ -410,9 +410,9 @@ impl Brain {
     /// Handle the `INFO rule <value>` command (it may arrive before or after START):
     /// - rule unchanged: return immediately to avoid reloading the model and wasting game time;
     /// - before START (no game yet): only record the rule; the model is loaded for the new rule at START;
-    /// - after START but before any move: the board applies the new rule; reload the model and
-    ///   rebuild MCTS only when the model for the new rule differs from the one already loaded
-    ///   (or none is loaded);
+    /// - after START but before any move: the board applies the new rule; the model is reloaded when
+    ///   its path for the new rule differs from the one already loaded, and the search tree is always
+    ///   rebuilt so it never carries over simulations made under the previous rule;
     /// - after moves have been played: do not interrupt the game in progress; the new rule takes
     ///   effect for the next game only.
     fn apply_rule(&mut self, rule: RuleFlag) {
@@ -427,13 +427,17 @@ impl Brain {
             return;
         }
         let action_size = game.get_action_size();
+        // The model path is resolved against the newly set rule, so the loaded model
+        // always matches the rule that is about to be played.
         let new_path = self.resolve_model_path();
         let model_unchanged =
             self.loaded_model_path.as_ref() == Some(&new_path) && self.neural_network.is_some();
         if !model_unchanged {
             self.load_neural_network();
-            self.mcts = Some(self.new_mcts(action_size));
         }
+        // Rebuild the search tree unconditionally after a rule switch: a tree produced
+        // under the previous rule must not be reused.
+        self.mcts = Some(self.new_mcts(action_size));
     }
 
     async fn play_move(&mut self) -> Option<u16> {
@@ -980,6 +984,44 @@ mod tests {
         assert!(brain.start(15));
 
         assert!(!brain.load_board(&[(112, 1), (112, 2)]));
+    }
+
+    // --- INFO rule 0: free-style ---
+
+    #[test]
+    fn info_rule_0_parses_to_freestyle() {
+        assert_eq!(RuleFlag::from_bits_truncate(0), RuleFlag::FreeStyle);
+    }
+
+    #[test]
+    fn switching_to_rule_0_selects_free_style_model() {
+        let mut brain = test_brain();
+
+        brain.apply_rule(RuleFlag::Standard);
+        assert_eq!(
+            brain.config.model_path(brain.rule),
+            Path::new("models/standard.onnx")
+        );
+
+        brain.apply_rule(RuleFlag::from_bits_truncate(0)); // INFO rule 0
+        assert_eq!(brain.rule, RuleFlag::FreeStyle);
+        assert_eq!(
+            brain.config.model_path(brain.rule),
+            Path::new("models/free-style.onnx")
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_rule_rebuilds_search_tree_after_ponder() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        brain.ponder_batch().await;
+        assert!(!brain.mcts.as_ref().unwrap().root_is_leaf());
+
+        brain.apply_rule(RuleFlag::Standard);
+
+        assert!(brain.mcts.as_ref().unwrap().root_is_leaf());
     }
 
     // --- INFO rule 9: standard caro (0b1001 = exactly-five(1) | caro(8)) ---

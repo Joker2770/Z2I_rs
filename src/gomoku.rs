@@ -38,6 +38,19 @@ impl CheckResult {
         }
     }
 
+    /// Free-style win check (five or more in a row), lazily constructing the judge.
+    fn free_style_win(&mut self, board: &Board, last_move: i16) -> bool {
+        match self.rule_grp.free_style_obj {
+            None => {
+                let o = FreeStyleJudge::new();
+                let is_win = o.check_win(board, last_move);
+                self.rule_grp.free_style_obj = Some(o);
+                is_win
+            }
+            Some(f) => f.check_win(board, last_move),
+        }
+    }
+
     fn value(
         &mut self,
         rule_flag: &RuleFlag,
@@ -52,18 +65,24 @@ impl CheckResult {
             self.chk_rst = (GameStage::Running, Color::Blank);
             return &self.chk_rst;
         }
-        let mut is_win = false;
-        let mut flag = RuleFlag::FreeStyle;
-        match self.rule_grp.free_style_obj {
-            None => {
-                let o = FreeStyleJudge::new();
-                self.rule_grp.free_style_obj = Some(o);
-                is_win = o.check_win(board, last_move);
+
+        // INFO rule 0 (free-style): the winner is decided solely by the free-style
+        // judge — five or more stones in a row win, with no forbidden-move restrictions.
+        if *rule_flag == RuleFlag::FreeStyle {
+            if self.free_style_win(board, last_move) {
+                let idx = last_move as usize;
+                let s = board_size as usize;
+                self.chk_rst = (GameStage::End, board[idx / s][idx % s]);
+            } else {
+                self.chk_rst = (GameStage::Running, Color::Blank);
             }
-            Some(f) => {
-                is_win = f.check_win(board, last_move);
-            }
+            return &self.chk_rst;
         }
+
+        // Other rules: free-style five-in-a-row is a necessary baseline; each
+        // additional sub-rule (standard exactly-five / renju / caro) further constrains it.
+        let mut is_win = self.free_style_win(board, last_move);
+        let mut flag = RuleFlag::FreeStyle;
         if rule_flag.contains(RuleFlag::Standard) {
             match self.rule_grp.stand_obj {
                 Some(s) => {
@@ -570,6 +589,61 @@ mod tests {
         ];
         stones.extend((3..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
         let mut gomoku = rule9_game(&stones);
+        assert_eq!(
+            gomoku.get_game_status(),
+            &(GameStage::Running, Color::Blank)
+        );
+    }
+
+    // --- INFO rule 0: free-style (five or more in a row wins) ---
+
+    fn rule0_game(stones: &[(u16, Color)]) -> Gomoku {
+        let mut gomoku = Gomoku::new(15, 5).unwrap();
+        assert!(gomoku.set_rule(RuleFlag::FreeStyle));
+        assert!(gomoku.load_position(stones, Color::White));
+        gomoku
+    }
+
+    #[test]
+    fn rule_0_five_in_a_row_wins() {
+        // Black fills row 7 columns 4..=8 (five in a row); white padding brings the
+        // move count to 9 so the rule check triggers, and the last stone is black.
+        let mut stones = vec![
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+            (3, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule0_game(&stones);
+        assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+    }
+
+    #[test]
+    fn rule_0_overline_wins() {
+        // six in a row still wins under free-style
+        let mut stones = vec![
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+        ];
+        stones.extend((3..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule0_game(&stones);
+        assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+    }
+
+    #[test]
+    fn rule_0_four_in_a_row_is_not_win() {
+        // only four black stones in a row: no win under free-style
+        let mut stones = vec![
+            (0u16, Color::White),
+            (1, Color::White),
+            (2, Color::White),
+            (3, Color::White),
+            (4, Color::White),
+        ];
+        stones.extend((4..=7).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule0_game(&stones);
         assert_eq!(
             gomoku.get_game_status(),
             &(GameStage::Running, Color::Blank)

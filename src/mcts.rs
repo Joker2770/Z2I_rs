@@ -567,6 +567,13 @@ impl MCTS {
         }
     }
 
+    /// Whether the search tree root has no children yet (nothing expanded).
+    /// A freshly (re)built tree returns `true`, which is useful to assert that
+    /// the search tree was actually reset (e.g. after a rule switch).
+    pub fn root_is_leaf(&self) -> bool {
+        self.root.borrow().is_leaf()
+    }
+
     pub fn get_best_action_after_simulation(&self, gomoku: &Gomoku) -> u16 {
         let root = self.root.borrow();
         let children = root.children.borrow();
