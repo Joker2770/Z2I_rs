@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Joker2770
 
 use rand;
-use rand_distr::{multi::Dirichlet, Distribution};
+use rand_distr::{Distribution, multi::Dirichlet};
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
 
@@ -23,8 +23,8 @@ impl SelfPlay {
         Self { neural_network: nn }
     }
 
-    pub async fn play(&self, save_id: u16, simulation_num: usize) {
-        const BUFFER_LEN: u16 = cfg::BOARD_SIZE as u16 * cfg::BOARD_SIZE as u16 + 1;
+    pub async fn play(&self, save_id: u16, simulation_num: usize, board_size: u8, n_in_row: u8) {
+        let buffer_len: u16 = board_size as u16 * board_size as u16 + 1;
 
         let get_temp = |&step: &u16| -> f64 {
             let t_min = cfg::GREEDY_TEMP;
@@ -34,7 +34,7 @@ impl SelfPlay {
             t_min.max(1.0 * (-(0.0f64.max(step as f64 - warmup as f64)) / decay as f64).exp())
         };
 
-        let game = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW);
+        let game = Gomoku::new(board_size, n_in_row);
         if let Some(gg) = game {
             let game_ref = Rc::new(RefCell::new(gg));
             let action_size = game_ref.borrow().get_action_size();
@@ -56,17 +56,12 @@ impl SelfPlay {
 
             let mut step = 0u16;
             let mut board_buffer =
-                vec![
-                    vec![vec![0; cfg::BOARD_SIZE as usize]; cfg::BOARD_SIZE as usize];
-                    BUFFER_LEN as usize
-                ];
-            let mut v_buffer = vec![0; BUFFER_LEN as usize];
-            let mut p_buffer = vec![
-                vec![0.0; cfg::BOARD_SIZE as usize * cfg::BOARD_SIZE as usize];
-                BUFFER_LEN as usize
-            ];
-            let mut color_buffer = vec![0i8; BUFFER_LEN as usize];
-            let mut last_move_buffer = vec![0; BUFFER_LEN as usize];
+                vec![vec![vec![0; board_size as usize]; board_size as usize]; buffer_len as usize];
+            let mut v_buffer = vec![0; buffer_len as usize];
+            let mut p_buffer =
+                vec![vec![0.0; board_size as usize * board_size as usize]; buffer_len as usize];
+            let mut color_buffer = vec![0i8; buffer_len as usize];
+            let mut last_move_buffer = vec![0; buffer_len as usize];
 
             let mut rng = rand::rng();
 
@@ -121,8 +116,8 @@ impl SelfPlay {
                     let mut noise_idx = 0usize;
                     for (i, legal) in lm.iter().enumerate().take(action_probs.len()) {
                         if *legal == 1u8 {
-                            action_probs[i] = (1.0 - cfg::DIRI) * action_probs[i]
-                                + cfg::DIRI * noise[noise_idx];
+                            action_probs[i] =
+                                (1.0 - cfg::DIRI) * action_probs[i] + cfg::DIRI * noise[noise_idx];
                             noise_idx += 1;
                         }
                     }
@@ -187,8 +182,8 @@ impl SelfPlay {
             _ = file.write_all(&(step as i32).to_ne_bytes());
 
             for i in 0..step {
-                for j in 0..cfg::BOARD_SIZE {
-                    for k in 0..cfg::BOARD_SIZE {
+                for j in 0..board_size {
+                    for k in 0..board_size {
                         _ = file.write_all(
                             &(board_buffer[i as usize][j as usize][k as usize] as i32)
                                 .to_ne_bytes(),
@@ -228,7 +223,13 @@ impl SelfPlay {
         simulation_num: usize,
     ) {
         for i in 0..game_num {
-            self.play(start_batch_id + i, simulation_num).await;
+            self.play(
+                start_batch_id + i,
+                simulation_num,
+                cfg::BOARD_SIZE,
+                cfg::N_IN_ROW,
+            )
+            .await;
         }
     }
 }
@@ -236,7 +237,7 @@ impl SelfPlay {
 #[cfg(test)]
 mod tests {
 
-    use rand_distr::{multi::Dirichlet, Distribution};
+    use rand_distr::{Distribution, multi::Dirichlet};
 
     #[test]
     fn dirichlet_sample_alpha_0_3() {
