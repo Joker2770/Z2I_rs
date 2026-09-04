@@ -56,6 +56,7 @@ impl NeuralNetwork {
         let session = Session::builder()?
             .with_optimization_level(session::builder::GraphOptimizationLevel::Level3)?
             .with_intra_threads(intra_threads as usize)?
+            .with_inter_threads(1)?
             .commit_from_file(model_path)?;
         let input_names: Vec<String> = session
             .inputs()
