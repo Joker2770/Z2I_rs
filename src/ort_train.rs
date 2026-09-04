@@ -1,5 +1,8 @@
 #![deny(deprecated)]
 
+mod configuration;
+
+use configuration::cfg;
 use ndarray::{Array2, Array4};
 use ort::{memory::Allocator, session::Session, training::Trainer, value::Tensor};
 use std::{
@@ -10,7 +13,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const BOARD_SIZE: usize = 15;
+const BOARD_SIZE: usize = cfg::BOARD_SIZE as usize;
 const ACTION_SIZE: usize = BOARD_SIZE * BOARD_SIZE;
 
 struct Sample {

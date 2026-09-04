@@ -2,9 +2,15 @@
 // Copyright (c) 2026 Joker2770
 
 pub mod cfg {
+    #[cfg(feature = "tic-tac-toe")]
+    pub const BOARD_SIZE: u8 = 3;
+    #[cfg(not(feature = "tic-tac-toe"))]
     pub const BOARD_SIZE: u8 = 15;
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const N_IN_ROW: u8 = 3;
+    #[cfg(not(feature = "tic-tac-toe"))]
     pub const N_IN_ROW: u8 = 5;
     pub const C_PUCT: f32 = 2.5;
     pub const C_VIRTUAL_LOSS: f64 = 3.0;

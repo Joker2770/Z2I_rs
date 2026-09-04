@@ -19,6 +19,7 @@ Related projects:
 - MCTS search combined with ONNX neural network policy and value functions.
 - ONNX Runtime inference with batching and a background inference worker.
 - CPU build available by default; CUDA as an optional Cargo feature.
+- Tic-Tac-Toe mode is available through the `tic-tac-toe` Cargo feature.
 - Supports FreeStyle, Standard, Renju, Caro and Standard+Caro rule flags.
 - Implements the Gomocup/Piskvork-style console protocol: `START`, `BEGIN`, `TURN`, `BOARD`, `INFO`, `ABOUT`, `END`.
 - Model path and MCTS simulation count configurable via `config.toml`.
@@ -45,6 +46,18 @@ cargo build --release --features cuda --bin pbrain-Z2I_rs
 ```
 
 CUDA builds also require the host to have CUDA and related runtime libraries matching the ONNX Runtime/CUDA provider. Hosts without a GPU should use the default CPU build.
+
+### Tic-Tac-Toe
+
+Build with the 3x3 board and three-in-a-row defaults:
+
+```bash
+cargo build --release --features tic-tac-toe --bin pbrain-Z2I_rs
+```
+
+The same feature must be used for `train_and_eval` and `ort_train` so that
+self-play, evaluation and training tensors use the matching `3x3`/`9` shapes.
+The ONNX model must also be exported for a 3x3 board.
 
 ## Model & configuration
 
@@ -92,7 +105,9 @@ final_move_reserve_ms = 100
 num_intra_thread = 4
 ```
 
-Model files must be placed where the config specifies. The `NeuralNetwork` input tensor is currently fixed at `3x15x15`, and the ONNX models in the repo are exported for a 15x15 board; supporting other sizes requires changing the model input, the tensor conversion and the board configuration together.
+Model files must be placed where the config specifies. The default build expects
+`3x15x15` input tensors and the `tic-tac-toe` build expects `3x3x3`; the ONNX
+model must be exported for the selected board size.
 
 ### Provider selection
 

@@ -6,6 +6,7 @@ edition = "2024"
 [features]
 default = []
 training = ["ort/training"]
+tic-tac-toe = []
 cuda = ["ort/cuda", "ort/load-dynamic"]
 openvino = ["ort/openvino", "ort/load-dynamic"]
 tensorrt = ["ort/tensorrt", "ort/load-dynamic"]
