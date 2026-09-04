@@ -56,6 +56,7 @@ INPUT_CHANNEL_SIZE = 3
 
 def export_base_model(
     out_path: Path,
+    board_size: int = N,
     num_channels: int = 32,
     num_layers: int = 4,
     opset: int = 17,
@@ -72,13 +73,13 @@ def export_base_model(
     model = NeuralNetWork(
         num_layers=num_layers,
         num_channels=num_channels,
-        n=N,
-        action_size=ACTION_SIZE,
+        n=board_size,
+        action_size=board_size * board_size,
         input_channel_size=INPUT_CHANNEL_SIZE,
     )
     model.eval()
 
-    dummy = torch.randn(1, INPUT_CHANNEL_SIZE, N, N)
+    dummy = torch.randn(1, INPUT_CHANNEL_SIZE, board_size, board_size)
     torch.onnx.export(
         model,
         dummy,
@@ -268,6 +269,7 @@ def main() -> None:
         default=Path(__file__).resolve().parent / "base_model.onnx",
         help="Output path for the base ONNX model.",
     )
+    export_parser.add_argument("--board-size", type=int, default=N)
     export_parser.add_argument("--num-channels", type=int, default=32)
     export_parser.add_argument("--num-layers", type=int, default=4)
     export_parser.add_argument("--opset", type=int, default=17)
@@ -294,6 +296,7 @@ def main() -> None:
     if args.command == "export":
         export_base_model(
             args.base_out,
+            board_size=args.board_size,
             num_channels=args.num_channels,
             num_layers=args.num_layers,
             opset=args.opset,

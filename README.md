@@ -217,7 +217,13 @@ cargo run --features training --bin ort_train -- \
 	artifacts data weights/1.onnx artifacts/checkpoint.updated 128 1
 ```
 
-Argument order: `artifact_dir data_dir output_model checkpoint batch_size epochs`. Default training input names are `board`, `target_p`, `target_v`; if the training graph uses other names, pass three more name arguments. Ordinary `weights/*.onnx` supports inference only and cannot be used directly as ORT Training artifacts.
+Argument order: `artifact_dir data_dir output_model checkpoint batch_size epochs`. The
+default training input names are `board`, `target_p`, `target_v`, matching the
+Python model; exported inference outputs are `P` and `V`. If the training graph
+uses other names, pass three more name arguments. Each complete self-play file
+is expanded with the same eight rotations/flips as the Python learner.
+Incomplete or corrupted files are skipped. Ordinary `weights/*.onnx` supports
+inference only and cannot be used directly as ORT Training artifacts.
 
 ## Inference & throughput
 

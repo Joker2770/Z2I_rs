@@ -15,6 +15,11 @@ use std::{
 
 const BOARD_SIZE: usize = cfg::BOARD_SIZE as usize;
 const ACTION_SIZE: usize = BOARD_SIZE * BOARD_SIZE;
+const BOARD_INPUT_NAME: &str = "board";
+const POLICY_TARGET_NAME: &str = "target_p";
+const VALUE_TARGET_NAME: &str = "target_v";
+const POLICY_OUTPUT_NAME: &str = "P";
+const VALUE_OUTPUT_NAME: &str = "V";
 
 struct Sample {
     board: [i32; ACTION_SIZE],
@@ -39,8 +44,29 @@ fn read_f32(file: &mut File) -> io::Result<f32> {
 fn read_samples(path: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
     let mut file = File::open(path)?;
     let count = read_i32(&mut file)?;
-    if count < 0 {
-        return Err(format!("negative sample count in {}", path.display()).into());
+    if count <= 0 {
+        return Err(format!("invalid sample count {} in {}", count, path.display()).into());
+    }
+    let bytes_per_sample = (ACTION_SIZE * 2 + 3)
+        .checked_mul(std::mem::size_of::<i32>())
+        .ok_or("sample size overflow")?;
+    let expected_size = 4usize
+        .checked_add(
+            (count as usize)
+                .checked_mul(bytes_per_sample)
+                .ok_or("file size overflow")?,
+        )
+        .ok_or("file size overflow")?;
+    let file_size = file.metadata()?.len();
+    if file_size < expected_size as u64 {
+        return Err(format!(
+            "incomplete data file {}: step={}, size={}, expected={}",
+            path.display(),
+            count,
+            file_size,
+            expected_size
+        )
+        .into());
     }
 
     let mut boards = Vec::with_capacity(count as usize);
@@ -96,9 +122,56 @@ fn load_data(directory: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
 
     let mut samples = Vec::new();
     for path in paths {
-        samples.extend(read_samples(&path)?);
+        match read_samples(&path) {
+            Ok(file_samples) => {
+                for sample in file_samples {
+                    samples.extend(symmetries(sample));
+                }
+            }
+            Err(error) => eprintln!("skip corrupted data file {}: {error}", path.display()),
+        }
     }
     Ok(samples)
+}
+
+fn transformed_position(position: usize, rotation: usize, flip: bool) -> usize {
+    let mut row = position / BOARD_SIZE;
+    let mut column = position % BOARD_SIZE;
+    for _ in 0..rotation {
+        (row, column) = (BOARD_SIZE - 1 - column, row);
+    }
+    if flip {
+        column = BOARD_SIZE - 1 - column;
+    }
+    row * BOARD_SIZE + column
+}
+
+fn symmetries(sample: Sample) -> Vec<Sample> {
+    let mut result = Vec::with_capacity(8);
+    for rotation in 1..=4 {
+        for flip in [false, true] {
+            let mut board = [0; ACTION_SIZE];
+            let mut policy = [0.0; ACTION_SIZE];
+            for position in 0..ACTION_SIZE {
+                let transformed = transformed_position(position, rotation, flip);
+                board[transformed] = sample.board[position];
+                policy[transformed] = sample.policy[position];
+            }
+            let last_action = if sample.last_action >= 0 {
+                transformed_position(sample.last_action as usize, rotation, flip) as i32
+            } else {
+                -1
+            };
+            result.push(Sample {
+                board,
+                policy,
+                value: sample.value,
+                current_player: sample.current_player,
+                last_action,
+            });
+        }
+    }
+    result
 }
 
 #[inline]
@@ -199,7 +272,7 @@ fn train(
     }
 
     trainer.checkpoint().save(checkpoint_output, true)?;
-    trainer.export(output_model, ["P", "V"])?;
+    trainer.export(output_model, [POLICY_OUTPUT_NAME, VALUE_OUTPUT_NAME])?;
     Ok(())
 }
 
@@ -229,15 +302,15 @@ fn main() -> Result<(), Box<dyn Error>> {
         &PathBuf::from(&args[4]),
         batch_size,
         epochs,
-        args.get(7).map_or("board", String::as_str),
-        args.get(8).map_or("target_p", String::as_str),
-        args.get(9).map_or("target_v", String::as_str),
+        args.get(7).map_or(BOARD_INPUT_NAME, String::as_str),
+        args.get(8).map_or(POLICY_TARGET_NAME, String::as_str),
+        args.get(9).map_or(VALUE_TARGET_NAME, String::as_str),
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::player_channels;
+    use super::{player_channels, symmetries, Sample, ACTION_SIZE, BOARD_SIZE};
 
     #[test]
     fn channel_zero_holds_own_stones_for_both_players() {
@@ -250,5 +323,29 @@ mod tests {
         assert_eq!(player_channels(-1, -1), (1.0, 0.0));
         assert_eq!(player_channels(-1, 1), (0.0, 1.0));
         assert_eq!(player_channels(-1, 0), (0.0, 0.0));
+    }
+
+    #[test]
+    fn generates_python_compatible_eight_symmetries() {
+        let mut board = [0; ACTION_SIZE];
+        let mut policy = [0.0; ACTION_SIZE];
+        board[0] = 1;
+        policy[0] = 1.0;
+        let variants = symmetries(Sample {
+            board,
+            policy,
+            value: 1.0,
+            current_player: 1,
+            last_action: 0,
+        });
+
+        assert_eq!(variants.len(), 8);
+        let bottom_left = (BOARD_SIZE - 1) * BOARD_SIZE;
+        assert_eq!(variants[0].board[bottom_left], 1);
+        assert_eq!(variants[0].last_action, bottom_left as i32);
+        assert_eq!(variants[1].board[ACTION_SIZE - 1], 1);
+        assert_eq!(variants[1].last_action, (ACTION_SIZE - 1) as i32);
+        assert_eq!(variants[6].board[0], 1);
+        assert_eq!(variants[6].last_action, 0);
     }
 }

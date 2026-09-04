@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = []
-training = ["ort/training"]
+training = ["ort/training", "ort/load-dynamic"]
 tic-tac-toe = []
 cuda = ["ort/cuda", "ort/load-dynamic"]
 openvino = ["ort/openvino", "ort/load-dynamic"]
