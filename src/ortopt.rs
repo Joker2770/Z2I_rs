@@ -15,6 +15,7 @@ use ort::{
 
 use ndarray::Array;
 use std::{
+    collections::HashMap,
     error,
     ops::Div,
     path::Path,
@@ -119,10 +120,7 @@ impl NeuralNetwork {
         cur_color: &Color,
     ) -> Vec<f32> {
         let mut input_tensor_values =
-            vec![
-                0.0;
-                cfg::CHANNEL_SIZE as usize * board_size as usize * board_size as usize
-            ];
+            vec![0.0; cfg::CHANNEL_SIZE as usize * board_size as usize * board_size as usize];
         let mut first = 0;
         let mut second = 0;
         if *cur_color == Color::Black {
@@ -155,8 +153,8 @@ impl NeuralNetwork {
         // (last_move == -1), matching the training-feature convention in
         // ort_train.rs and train/neural_network.py.
         if last_move >= 0 {
-            input_tensor_values[2 * board_size as usize * board_size as usize
-                + last_move as usize] = 1.0;
+            input_tensor_values
+                [2 * board_size as usize * board_size as usize + last_move as usize] = 1.0;
         }
         input_tensor_values
     }
@@ -210,22 +208,24 @@ async fn inference_loop_async(
             }
         }
 
-        let states = tasks
+        let (unique_indices, task_to_unique) = deduplicate_tasks(&tasks);
+        let states = unique_indices
             .iter()
-            .flat_map(|task| task.state.iter().copied())
+            .flat_map(|&index| tasks[index].state.iter().copied())
             .collect();
+        let unique_batch_size = unique_indices.len();
         let result = infer_batch_async(
             &mut session,
             input_node_names,
             output_names,
             states,
-            tasks.len(),
+            unique_batch_size,
         )
         .await;
         match result {
             Ok(outputs) => {
-                for (task, output) in tasks.into_iter().zip(outputs) {
-                    let _ = task.response.send(Ok(output));
+                for (task, unique_index) in tasks.into_iter().zip(task_to_unique) {
+                    let _ = task.response.send(Ok(outputs[unique_index].clone()));
                 }
             }
             Err(error) => {
@@ -235,6 +235,28 @@ async fn inference_loop_async(
             }
         }
     }
+}
+
+fn deduplicate_tasks(tasks: &[InferenceTask]) -> (Vec<usize>, Vec<usize>) {
+    let mut unique_indices = Vec::new();
+    let mut task_to_unique = Vec::with_capacity(tasks.len());
+    let mut seen = HashMap::<Vec<u32>, usize>::new();
+
+    for task in tasks {
+        let key = task.state.iter().map(|value| value.to_bits()).collect();
+        let unique_index = match seen.get(&key) {
+            Some(&index) => index,
+            None => {
+                let index = unique_indices.len();
+                seen.insert(key, index);
+                unique_indices.push(task_to_unique.len());
+                index
+            }
+        };
+        task_to_unique.push(unique_index);
+    }
+
+    (unique_indices, task_to_unique)
 }
 
 async fn infer_batch_async(
@@ -297,21 +319,22 @@ async fn inference_loop_sync(
             }
         }
 
-        let states = tasks
+        let (unique_indices, task_to_unique) = deduplicate_tasks(&tasks);
+        let states = unique_indices
             .iter()
-            .flat_map(|task| task.state.iter().copied())
+            .flat_map(|&index| tasks[index].state.iter().copied())
             .collect();
         let result = infer_batch_sync(
             &mut session,
             input_node_names,
             output_names,
             states,
-            tasks.len(),
+            unique_indices.len(),
         );
         match result {
             Ok(outputs) => {
-                for (task, output) in tasks.into_iter().zip(outputs) {
-                    let _ = task.response.send(Ok(output));
+                for (task, unique_index) in tasks.into_iter().zip(task_to_unique) {
+                    let _ = task.response.send(Ok(outputs[unique_index].clone()));
                 }
             }
             Err(error) => {

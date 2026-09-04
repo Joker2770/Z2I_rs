@@ -480,8 +480,23 @@ impl MCTS {
     /// from simulations in the batch has been rolled back, so it is a good place to
     /// yield control (e.g. to use the opponent's thinking time for background pondering).
     pub async fn simulation_batch(&self, gomoku: &Gomoku) {
-        let simulations = (0..self.sims_per_batch).map(|_| self.simulation(gomoku));
-        future::join_all(simulations).await;
+        self.run_batch(gomoku, self.sims_per_batch).await;
+    }
+
+    async fn run_batch(&self, gomoku: &Gomoku, batch_size: u8) {
+        // The initial root is a leaf. Starting the whole batch concurrently would
+        // submit the same root position once per task before the first inference
+        // can expand it. Evaluate it once first so the remaining tasks descend
+        // into distinct root children.
+        if batch_size > 1 && self.root_is_leaf() {
+            self.simulation(gomoku).await;
+            let remaining = batch_size - 1;
+            let simulations = (0..remaining).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
+        } else {
+            let simulations = (0..batch_size).map(|_| self.simulation(gomoku));
+            future::join_all(simulations).await;
+        }
     }
 
     pub async fn simulation_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) {
@@ -512,8 +527,7 @@ impl MCTS {
             }
             let batch_size = self.sims_per_batch;
             let started = Instant::now();
-            let simulations = (0..batch_size).map(|_| self.simulation(gomoku));
-            future::join_all(simulations).await;
+            self.run_batch(gomoku, batch_size).await;
             self.record_batch_duration(started.elapsed());
             completed_simulations += batch_size as usize;
         }
@@ -556,8 +570,7 @@ impl MCTS {
             }
             let batch_size = self.sims_per_batch;
             let started = Instant::now();
-            let simulations = (0..batch_size).map(|_| self.simulation(gomoku));
-            future::join_all(simulations).await;
+            self.run_batch(gomoku, batch_size).await;
             self.record_batch_duration(started.elapsed());
             completed_simulations += batch_size as usize;
             if Instant::now() >= next_report {
