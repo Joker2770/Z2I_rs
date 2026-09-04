@@ -8,7 +8,6 @@ use std::rc::{Rc, Weak};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU16, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
-use tokio::task;
 
 use crate::configuration::cfg;
 use crate::gomoku::{GameStage, Gomoku};
@@ -733,9 +732,10 @@ impl MCTS {
                     .borrow()
                     .commit(&g)
                     .expect("inference worker is unavailable");
-                let result = task::spawn_blocking(move || rx.recv().unwrap())
+                // Await the oneshot result directly in async context instead of blocking a thread.
+                let result = rx
                     .await
-                    .unwrap()
+                    .expect("inference worker dropped")
                     .expect("inference failed");
                 action_priors = result.0;
                 value = result.1;

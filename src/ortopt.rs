@@ -22,18 +22,18 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
-        mpsc::{self, Receiver, Sender},
     },
     thread,
     time::Duration,
 };
+use tokio::sync::oneshot;
 use tokio::{sync::mpsc as tokio_mpsc, time::timeout};
 
 pub(crate) type InferenceOutput = Result<(Vec<f64>, f64), String>;
 
 struct InferenceTask {
     state: Vec<f32>,
-    response: Sender<InferenceOutput>,
+    response: oneshot::Sender<InferenceOutput>,
 }
 
 pub struct NeuralNetwork {
@@ -168,9 +168,9 @@ impl NeuralNetwork {
         )
     }
 
-    pub fn commit(&self, gomoku: &Gomoku) -> Result<Receiver<InferenceOutput>, String> {
+    pub fn commit(&self, gomoku: &Gomoku) -> Result<oneshot::Receiver<InferenceOutput>, String> {
         let state = self.transform_gomoku_2_tensor(gomoku);
-        let (response_sender, response_receiver) = mpsc::channel();
+        let (response_sender, response_receiver) = oneshot::channel();
         self.request_sender
             .send(InferenceTask {
                 state,
