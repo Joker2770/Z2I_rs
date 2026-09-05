@@ -6,29 +6,49 @@ pub mod cfg {
     pub const BOARD_SIZE: u8 = 3;
     #[cfg(feature = "tic-tac-toe")]
     pub const N_IN_ROW: u8 = 3;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const C_PUCT: f32 = 1.25;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const C_VIRTUAL_LOSS: f64 = 1.0;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const DEFAULT_SIMULATION_NUM: usize = 32;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const EXPLORE_STEP: u16 = 3;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const DIRI: f64 = 0.3;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const DIRICHLET_ALPHA: f64 = 0.35;
+
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const BOARD_SIZE: u8 = 15;
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const N_IN_ROW: u8 = 5;
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const C_PUCT: f32 = 2.5;
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const C_VIRTUAL_LOSS: f64 = 3.0;
+    // Colab T4: 2 vCPUs are the bottleneck, so the base simulation count is lowered;
+    // it still grows with weight generation (SIMS_BOOST_*)
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const DEFAULT_SIMULATION_NUM: usize = 400;
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const EXPLORE_STEP: u16 = 15;
+    // AlphaZero exploration noise: π = (1 - DIRI)·p + DIRI·η, η ~ Dir(DIRICHLET_ALPHA)
+    // DIRI is the Dirichlet noise mixing factor ε (0.25 in the AlphaZero paper)
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const DIRI: f64 = 0.25;
+    // Dirichlet concentration parameter α (0.3 in the AlphaZero paper)
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const DIRICHLET_ALPHA: f64 = 0.3;
+
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
-    pub const C_PUCT: f32 = 2.5;
-    pub const C_VIRTUAL_LOSS: f64 = 3.0;
     pub const CHANNEL_SIZE: u8 = 3;
     // Colab T4: 16GB VRAM is ample, so inference batches can be larger
     // (few concurrent CPU instances, limited benefit but no harm)
     pub const DEFAULT_BATCH_SIZE: u16 = 256;
-    // Colab T4: 2 vCPUs are the bottleneck, so the base simulation count is lowered;
-    // it still grows with weight generation (SIMS_BOOST_*)
-    pub const DEFAULT_SIMULATION_NUM: usize = 400;
     pub const MAX_BATCH_SIZE: u16 = 512;
     pub const MIN_BATCH_SIZE: u16 = 1;
-    pub const EXPLORE_STEP: u16 = 15;
-    // AlphaZero exploration noise: π = (1 - DIRI)·p + DIRI·η, η ~ Dir(DIRICHLET_ALPHA)
-    // DIRI is the Dirichlet noise mixing factor ε (0.25 in the AlphaZero paper)
-    pub const DIRI: f64 = 0.25;
-    // Dirichlet concentration parameter α (0.3 in the AlphaZero paper)
-    pub const DIRICHLET_ALPHA: f64 = 0.3;
     // Colab T4 has only 2 vCPUs, so 16 threads would be heavily oversubscribed;
     // after lowering, each instance effectively gets max(4/2,2)=2 during generation
     pub const DEFAULT_INTRA_THREAD_NUM: u8 = 4;
