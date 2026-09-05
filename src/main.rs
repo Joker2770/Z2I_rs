@@ -286,6 +286,7 @@ struct Brain {
     sim_per_batch_num: u8,
     intra_thread_num: u8,
     timeout_turn: Option<u64>,
+    time_left: Option<i64>,
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
     loaded_model_path: Option<PathBuf>,
@@ -303,6 +304,7 @@ impl Brain {
             ai_color: Color::Black,
             rule: RuleFlag::FreeStyle,
             timeout_turn: None,
+            time_left: None,
             simulation_num: config.mcts.num_mct_sims,
             sim_per_batch_num: config.mcts.num_sim_per_batch,
             intra_thread_num: config.onnx.num_intra_thread,
@@ -375,12 +377,23 @@ impl Brain {
         )
     }
 
-    /// Compute the thinking deadline from `INFO timeout_turn` (milliseconds, 0 = move ASAP);
-    /// `None` means the command was not received, so thinking time is unlimited
-    /// (run the configured number of simulations).
+    /// Compute the effective thinking deadline from the per-move and match-level clocks.
+    /// `time_left` is signed because the protocol permits negative values after a timeout.
+    /// `None` means the corresponding INFO value was not received.
     fn think_deadline(&self) -> Option<Instant> {
-        self.timeout_turn
-            .map(|ms| Instant::now() + Duration::from_millis(ms))
+        let now = Instant::now();
+        let turn_deadline = self
+            .timeout_turn
+            .map(|ms| now + Duration::from_millis(ms));
+        let match_deadline = self.time_left.map(|ms| {
+            now + Duration::from_millis(ms.max(0) as u64)
+        });
+
+        match (turn_deadline, match_deadline) {
+            (Some(turn), Some(match_deadline)) => Some(turn.min(match_deadline)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
     }
 
     fn start(&mut self, size: u8) -> bool {
@@ -484,36 +497,42 @@ impl Brain {
         is_succeed
     }
 
-    /// Background pondering: run one batch of MCTS simulations while waiting for the opponent.
+    /// Background pondering: run one time-bounded MCTS step while waiting for the opponent.
     /// - game not started or already over: return immediately, don't burn CPU;
-    /// - otherwise run `sims_per_batch` simulations concurrently. A batch boundary is a consistent
-    ///   point of the search tree, so when the opponent's move arrives we at most wait for the
-    ///   current batch to finish (millisecond scale). Without a model, random MCTS is still
-    ///   allowed, but only for the configured simulation budget so the tree cannot grow forever.
+    /// - run a full batch only when the timeout reserve can accommodate it;
+    /// - otherwise run one simulation to reduce the delay before an opponent move is handled;
+    /// - without a model, random MCTS is still allowed, but only for the configured simulation
+    ///   budget so the tree cannot grow forever.
     async fn ponder_batch(&mut self) {
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        if game.get_game_status().0 != GameStage::Running || *game.get_cur_color() == self.ai_color
+        {
+            return;
+        }
         if self.neural_network.is_none() {
             if self.random_ponder_batches_remaining == 0 {
                 return;
             }
             self.random_ponder_batches_remaining -= 1;
         }
-        let (Some(game), Some(mcts)) = (self.game.as_mut(), self.mcts.as_ref()) else {
+        let (Some(game), Some(mcts)) = (self.game.as_ref(), self.mcts.as_ref()) else {
             return;
         };
-        if game.get_game_status().0 != GameStage::Running {
-            return;
-        }
-        mcts.simulation_batch(game).await;
+        mcts
+            .simulation_step_within(game, self.think_deadline())
+            .await;
     }
 
-    /// Whether pondering is possible: a game exists and is still in progress.
+    /// Whether pondering is possible: it is only useful during the opponent's turn.
     fn should_ponder(&mut self) -> bool {
         self.enable_ponder
             && (self.neural_network.is_some() || self.random_ponder_batches_remaining > 0)
-            && self
-                .game
-                .as_mut()
-                .is_some_and(|game| game.get_game_status().0 == GameStage::Running)
+            && self.game.as_mut().is_some_and(|game| {
+                game.get_game_status().0 == GameStage::Running
+                    && game.get_cur_color() != &self.ai_color
+            })
     }
 
     async fn begin(&mut self) -> Option<u16> {
@@ -635,9 +654,8 @@ async fn run_protocol() {
     loop {
         // Wait for the next command line; while a game is in progress (not in BOARD collection mode),
         // use the time waiting for the opponent's move to keep running MCTS simulations in the
-        // background (batch by batch) until a command arrives. When a command arrives we at most
-        // wait for the current batch to finish naturally (millisecond scale); simulations are never
-        // cancelled mid-way, which would leave virtual_loss residue.
+        // background (batch by batch). When a command arrives, finish the current batch before
+        // handling it so all virtual losses are resolved at a consistent batch boundary.
         let line = if board_lines.is_none() {
             loop {
                 match line_rx.try_recv() {
@@ -746,6 +764,13 @@ async fn run_protocol() {
                             brain.timeout_turn = Some(value);
                         }
                     }
+                    Some("time_left") => {
+                        if let Some(value) =
+                            fields.next().and_then(|value| value.parse::<i64>().ok())
+                        {
+                            brain.time_left = Some(value);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -803,6 +828,23 @@ mod tests {
     }
 
     #[test]
+    fn time_left_caps_the_thinking_deadline() {
+        let mut brain = test_brain();
+        brain.timeout_turn = Some(60_000);
+        brain.time_left = Some(1);
+        let deadline = brain.think_deadline().expect("deadline should be set");
+        assert!(deadline <= Instant::now() + Duration::from_millis(100));
+    }
+
+    #[test]
+    fn negative_time_left_sets_an_immediate_deadline() {
+        let mut brain = test_brain();
+        brain.time_left = Some(-1);
+        let deadline = brain.think_deadline().expect("deadline should be set");
+        assert!(deadline <= Instant::now() + Duration::from_millis(100));
+    }
+
+    #[test]
     fn partial_config_keeps_defaults_for_missing_sections() {
         let config: AppConfig = toml::from_str(
             r#"
@@ -842,6 +884,25 @@ mod tests {
                 .sum::<u8>(),
             225
         );
+    }
+
+    #[test]
+    fn pondering_only_starts_on_the_opponents_turn() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_cur_color(),
+            &brain.ai_color
+        );
+        assert!(!brain.should_ponder());
+
+        assert!(brain.play_opponent_move(0));
+        assert_ne!(
+            brain.game.as_ref().unwrap().get_cur_color(),
+            &brain.ai_color
+        );
+        assert!(brain.should_ponder());
     }
 
     #[test]
@@ -921,6 +982,35 @@ mod tests {
         assert!(action < 225);
         assert_eq!(brain.game.as_ref().unwrap().get_cur_color(), &Color::White);
         assert_eq!(brain.game.as_ref().unwrap().get_last_move(), action as i16);
+    }
+
+    #[tokio::test]
+    async fn pondering_starts_after_our_move() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+
+        let _ = brain.begin().await.expect("BEGIN should return a move");
+
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_cur_color(),
+            &opposite(brain.ai_color)
+        );
+        assert!(brain.should_ponder());
+
+        let opponent_action = brain
+            .game
+            .as_ref()
+            .unwrap()
+            .get_legal_moves()
+            .iter()
+            .position(|&legal| legal == 1)
+            .unwrap() as u16;
+        assert!(brain.play_opponent_move(opponent_action));
+        assert_eq!(
+            brain.game.as_ref().unwrap().get_cur_color(),
+            &brain.ai_color
+        );
+        assert!(!brain.should_ponder());
     }
 
     #[tokio::test]
@@ -1016,6 +1106,9 @@ mod tests {
         let mut brain = test_brain();
         assert!(brain.start(15));
 
+        // Simulate the engine playing White: the initial empty board is then the
+        // opponent's turn, so pondering is valid before the first move.
+        brain.ai_color = Color::White;
         brain.ponder_batch().await;
         assert!(!brain.mcts.as_ref().unwrap().root_is_leaf());
 

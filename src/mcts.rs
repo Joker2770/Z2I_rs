@@ -482,6 +482,25 @@ impl MCTS {
         self.run_batch(gomoku, self.sims_per_batch).await;
     }
 
+    /// Run one background-search step without starting a batch that is unlikely to
+    /// finish within the available time. A single simulation is preferable near
+    /// the deadline because the opponent may move at any moment.
+    pub async fn simulation_step_within(
+        &self,
+        gomoku: &Gomoku,
+        deadline: Option<Instant>,
+    ) {
+        if let Some(deadline) = deadline {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining <= self.batch_reserve() {
+                self.simulation(gomoku).await;
+                return;
+            }
+        }
+
+        self.run_batch(gomoku, self.sims_per_batch).await;
+    }
+
     async fn run_batch(&self, gomoku: &Gomoku, batch_size: u8) {
         // The initial root is a leaf. Starting the whole batch concurrently would
         // submit the same root position once per task before the first inference
