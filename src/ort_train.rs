@@ -10,6 +10,7 @@ use std::{
     error::Error,
     fs::{self, File},
     io::{self, Read},
+    mem,
     path::{Path, PathBuf},
 };
 
@@ -231,6 +232,15 @@ fn train(
     value_name: &str,
 ) -> Result<(), Box<dyn Error>> {
     let _ = ort::init().commit();
+    // ort registers `release_env_on_exit` in `.fini_array` so that `ReleaseEnv`
+    // runs when the process exits. When the runtime is loaded dynamically
+    // (ORT_DYLIB_PATH / load-dynamic) the shared library is dlopen'd after the
+    // executable, so `_dl_fini` tears down the library's C++ statics *before*
+    // our `.fini_array` entry runs, and calling `ReleaseEnv` on the torn-down
+    // library segfaults at process exit. Leaking one `Arc` keeps the reference
+    // count above zero so the environment is never released here; the OS
+    // reclaims it when the process exits anyway.
+    mem::forget(ort::environment::Environment::current()?);
     let trainer = Trainer::new_from_artifacts(
         Session::builder()?,
         Allocator::default(),
@@ -265,7 +275,12 @@ fn train(
             trainer.optimizer().step()?;
             batches += 1;
             if let Some(loss) = outputs.values().next() {
-                println!("epoch={} batch={} loss={:?}", epoch + 1, batches, loss);
+                let loss_value = loss
+                    .try_extract_tensor::<f32>()
+                    .ok()
+                    .and_then(|(_, data)| data.first().copied())
+                    .unwrap_or(f32::NAN);
+                println!("epoch={} batch={} loss={loss_value}", epoch + 1, batches);
             }
         }
         println!("epoch={} batches={}", epoch + 1, batches);
