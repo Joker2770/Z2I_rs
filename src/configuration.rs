@@ -87,9 +87,9 @@ pub mod cfg {
     // keep a margin above the measured ~1.3s batch time on the reference CPU
     pub const TIME_RESERVE_MS: u64 = 1800;
     // minimum remaining time (ms) required before starting one final simulation
-    pub const SINGLE_SIM_RESERVE_MS: u64 = 400;
+    pub const SINGLE_SIM_RESERVE_MS: u64 = 800;
     // time (ms) kept for applying and reporting the selected move
-    pub const FINAL_MOVE_RESERVE_MS: u64 = 100;
+    pub const FINAL_MOVE_RESERVE_MS: u64 = 500;
     pub const RENDER_AT_EVAL: bool = true;
     // whether self-play (training data generation) renders the board step by step
     // and prints temp/Step; keep false for parallel generation to avoid interleaved
