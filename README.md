@@ -106,8 +106,10 @@ num_intra_thread = 4
 ```
 
 Model files must be placed where the config specifies. The default build expects
-`3x15x15` input tensors and the `tic-tac-toe` build expects `3x3x3`; the ONNX
-model must be exported for the selected board size.
+`4x15x15` input tensors and the `tic-tac-toe` build expects `4x3x3`; the ONNX
+model must be exported for the selected board size. The four channels are
+current player's stones, opponent's stones, last-move marker, and a constant
+side-to-move color plane (+1 Black / -1 White), respectively.
 
 ### Provider selection
 
