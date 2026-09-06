@@ -173,6 +173,75 @@ pub struct MCTS {
     timing: Mutex<TimingStats>,
 }
 
+/// Convert a node's children visit counts into a policy vector.
+/// `temp == 1.0` yields the raw search distribution π(a) ∝ N(a) — the AlphaZero
+/// training target — while smaller `temp` sharpens it toward the argmax.
+fn policy_from_children(children: &[Rc<MCTSNode>], action_size: usize, temp: f64) -> Vec<f64> {
+    let mut action_probs = vec![0.0; action_size];
+
+    // greedy
+    if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
+        let mut best_action = u16::MAX;
+        let mut most_visits = 0;
+        for c in children.iter() {
+            let c_v = c.visits.borrow().load(Ordering::SeqCst);
+            if c_v > most_visits
+                || (c_v == most_visits
+                    && c.prior_probs
+                        > children
+                            .iter()
+                            .find(|candidate| candidate.action == best_action)
+                            .map_or(-1.0, |candidate| candidate.prior_probs))
+            {
+                most_visits = c_v;
+                best_action = c.action;
+            }
+        }
+
+        if !children.is_empty() {
+            action_probs[best_action as usize] = 1.0;
+        }
+    }
+    // explore
+    else {
+        // Convert visit counts into policy probabilities: π(a) ∝ N(a)^(1/τ).
+        // To avoid numerical overflow, compute log π(a) = (1/τ) * ln(N(a)) in the log domain
+        // and subtract the max (max_log_prob) before exponentiating — the numerically stable softmax form.
+        let inv_temp = (1.0).div(temp);
+        let mut log_probs = vec![f64::NEG_INFINITY; action_size];
+        let mut max_log_prob = f64::NEG_INFINITY;
+        for c in children.iter() {
+            let c_v = c.visits.borrow().load(Ordering::SeqCst);
+            if c_v > 0 {
+                let log_prob = inv_temp * (c_v as f64).ln();
+                log_probs[c.action as usize] = log_prob;
+                max_log_prob = max_log_prob.max(log_prob);
+            }
+        }
+
+        let mut sum = 0.0;
+        for (idx, log_prob) in log_probs.iter().enumerate() {
+            if log_prob.is_finite() {
+                action_probs[idx] = (log_prob - max_log_prob).exp();
+                sum += action_probs[idx];
+            }
+        }
+        // println!("Sum of action_probs before normalization: {}", sum);
+        if sum > f64::EPSILON {
+            action_probs.iter_mut().for_each(|x| *x = x.div(sum));
+        } else {
+            for c in children.iter() {
+                action_probs[c.action as usize] = c.prior_probs;
+            }
+            let prior_sum: f64 = action_probs.iter().sum();
+            if prior_sum > f64::EPSILON {
+                action_probs.iter_mut().for_each(|x| *x = x.div(prior_sum));
+            }
+        }
+    }
+    action_probs
+}
+
 impl MCTS {
     pub fn new(
         neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
@@ -346,77 +415,41 @@ impl MCTS {
         temp: f64,
         deadline: Option<Instant>,
     ) -> Vec<f64> {
-        // for _ in 0..self.simulation_num {
-        //     _ = self.simulation(gomoku).await;
-        // }
         self.simulation_within(gomoku, deadline).await;
 
-        let priors_size = gomoku.get_action_size() as usize;
-        let mut action_probs = vec![0.0; priors_size];
         let root = self.root.borrow();
         let children = root.children.borrow();
+        policy_from_children(&children, gomoku.get_action_size() as usize, temp)
+    }
 
-        // greedy
-        if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
-            let mut best_action = u16::MAX;
-            let mut most_visits = 0;
-            for c in children.iter() {
-                let c_v = c.visits.borrow().load(Ordering::SeqCst);
-                if c_v > most_visits
-                    || (c_v == most_visits
-                        && c.prior_probs
-                            > children
-                                .iter()
-                                .find(|candidate| candidate.action == best_action)
-                                .map_or(-1.0, |candidate| candidate.prior_probs))
-                {
-                    most_visits = c_v;
-                    best_action = c.action;
-                }
-            }
+    /// Run one search and return the raw τ = 1 visit-count policy — the AlphaZero
+    /// training target π(a) ∝ N(a) — together with the temperature-sharpened policy
+    /// used to select the move actually played. Both are derived from the same search,
+    /// so no extra simulation is run.
+    pub async fn get_raw_and_tempered_probs(
+        &self,
+        gomoku: &Gomoku,
+        temp: f64,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.get_raw_and_tempered_probs_within(gomoku, temp, None)
+            .await
+    }
 
-            if !children.is_empty() {
-                action_probs[best_action as usize] = 1.0;
-            }
-        }
-        // explore
-        else {
-            // Convert visit counts into policy probabilities: π(a) ∝ N(a)^(1/τ).
-            // To avoid numerical overflow, compute log π(a) = (1/τ) * ln(N(a)) in the log domain
-            // and subtract the max (max_log_prob) before exponentiating — the numerically stable softmax form.
-            let inv_temp = (1.0).div(temp);
-            let mut log_probs = vec![f64::NEG_INFINITY; priors_size];
-            let mut max_log_prob = f64::NEG_INFINITY;
-            for c in children.iter() {
-                let c_v = c.visits.borrow().load(Ordering::SeqCst);
-                if c_v > 0 {
-                    let log_prob = inv_temp * (c_v as f64).ln();
-                    log_probs[c.action as usize] = log_prob;
-                    max_log_prob = max_log_prob.max(log_prob);
-                }
-            }
+    /// Same as [`MCTS::get_raw_and_tempered_probs`], but bounded by `deadline`.
+    pub async fn get_raw_and_tempered_probs_within(
+        &self,
+        gomoku: &Gomoku,
+        temp: f64,
+        deadline: Option<Instant>,
+    ) -> (Vec<f64>, Vec<f64>) {
+        self.simulation_within(gomoku, deadline).await;
 
-            let mut sum = 0.0;
-            for (idx, log_prob) in log_probs.iter().enumerate() {
-                if log_prob.is_finite() {
-                    action_probs[idx] = (log_prob - max_log_prob).exp();
-                    sum += action_probs[idx];
-                }
-            }
-            // println!("Sum of action_probs before normalization: {}", sum);
-            if sum > f64::EPSILON {
-                action_probs.iter_mut().for_each(|x| *x = x.div(sum));
-            } else {
-                for c in children.iter() {
-                    action_probs[c.action as usize] = c.prior_probs;
-                }
-                let prior_sum: f64 = action_probs.iter().sum();
-                if prior_sum > f64::EPSILON {
-                    action_probs.iter_mut().for_each(|x| *x = x.div(prior_sum));
-                }
-            }
-        }
-        action_probs
+        let action_size = gomoku.get_action_size() as usize;
+        let root = self.root.borrow();
+        let children = root.children.borrow();
+        let raw = policy_from_children(&children, action_size, 1.0);
+        let tempered = policy_from_children(&children, action_size, temp);
+        (raw, tempered)
     }
 
     pub fn get_best_action_from_probs(&self, probs: &[f64]) -> u16 {
@@ -1078,5 +1111,88 @@ mod tests {
             1
         );
         assert!((*parent.total_value.borrow() + 1.0).abs() < 1e-12);
+    }
+
+    fn visited_child(action: u16, visits: usize, prior: f64) -> Rc<MCTSNode> {
+        let mut node = MCTSNode::new();
+        node.action = action;
+        node.prior_probs = prior;
+        node.visits.borrow_mut().store(visits, Ordering::SeqCst);
+        Rc::new(node)
+    }
+
+    #[test]
+    fn policy_from_children_tau_one_is_raw_visit_distribution() {
+        let children = vec![
+            visited_child(0, 2, 0.9),
+            visited_child(1, 1, 0.1),
+            visited_child(2, 0, 0.2),
+        ];
+
+        let probs = policy_from_children(&children, 3, 1.0);
+
+        assert!((probs[0] - 2.0 / 3.0).abs() < 1e-12);
+        assert!((probs[1] - 1.0 / 3.0).abs() < 1e-12);
+        assert_eq!(probs[2], 0.0);
+        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn policy_from_children_smaller_temp_sharpens_the_distribution() {
+        let children = vec![visited_child(0, 2, 0.9), visited_child(1, 1, 0.1)];
+
+        let raw = policy_from_children(&children, 3, 1.0);
+        let tempered = policy_from_children(&children, 3, 0.5);
+
+        // τ = 0.5 concentrates mass on the most-visited action.
+        assert!(raw[0] < tempered[0]);
+        assert!((tempered.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn policy_from_children_greedy_temp_is_one_hot_with_prior_tie_break() {
+        // equal visits: higher prior wins the tie
+        let children = vec![
+            visited_child(0, 1, 0.2),
+            visited_child(1, 1, 0.9),
+            visited_child(2, 0, 0.5),
+        ];
+        let greedy = policy_from_children(&children, 3, cfg::GREEDY_TEMP);
+        assert_eq!(greedy[1], 1.0);
+        assert_eq!(greedy.iter().sum::<f64>(), 1.0);
+
+        // clear majority: most-visited action wins
+        let children = vec![visited_child(0, 5, 0.1), visited_child(1, 2, 0.9)];
+        let greedy = policy_from_children(&children, 2, cfg::GREEDY_TEMP);
+        assert_eq!(greedy[0], 1.0);
+    }
+
+    #[test]
+    fn policy_from_children_with_no_children_returns_zeros() {
+        let probs = policy_from_children(&[], 4, 1.0);
+        assert_eq!(probs, vec![0.0; 4]);
+    }
+
+    #[tokio::test]
+    async fn get_raw_and_tempered_probs_runs_a_single_search_and_returns_raw_target() {
+        let game = Gomoku::new(15, 5).expect("valid test board");
+        let sims = 8usize;
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(sims),
+            1,
+            game.get_action_size(),
+        );
+
+        // temp = 1.0: the tempered view must equal the raw τ = 1 target.
+        let (raw, tempered) = mcts.get_raw_and_tempered_probs(&game, 1.0).await;
+        assert_eq!(raw, tempered);
+        assert!((raw.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        // One combined call runs exactly one simulation batch — not two searches.
+        let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
+        assert_eq!(root_visits, sims);
     }
 }

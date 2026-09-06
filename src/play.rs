@@ -72,12 +72,15 @@ impl SelfPlay {
                     println!("Step: {}", step);
                     println!("temp: {}", temp);
                 }
-                let mut action_probs = mcts.get_action_probs(&game_ref.borrow(), temp).await;
+                let (raw_probs, mut action_probs) = mcts
+                    .get_raw_and_tempered_probs(&game_ref.borrow(), temp)
+                    .await;
                 let board = game_ref.borrow().get_board().clone();
-                // the training target stores the clean π before noise (the search-improved policy);
-                // Dirichlet noise only affects move selection and is not injected into the training
-                // target (consistent with AlphaGo Zero and the junxiaosong reference)
-                for (i, p) in action_probs.iter().enumerate() {
+                // the training target stores the raw τ = 1 visit distribution π(a) ∝ N(a)
+                // (the AlphaZero convention, decoupled from move-selection temperature);
+                // the temperature-sharpened policy and the Dirichlet noise below only affect
+                // move selection and never leak into the training target
+                for (i, p) in raw_probs.iter().enumerate() {
                     p_buffer[step as usize][i] = *p;
                 }
                 for i in 0..board.len() {
