@@ -43,7 +43,7 @@ pub mod cfg {
 
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
-    pub const CHANNEL_SIZE: u8 = 4;
+    pub const INPUT_CHANNEL_SIZE: u8 = 4;
     // Colab T4: 16GB VRAM is ample, so inference batches can be larger
     // (few concurrent CPU instances, limited benefit but no harm)
     pub const DEFAULT_BATCH_SIZE: u16 = 256;

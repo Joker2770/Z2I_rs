@@ -518,11 +518,7 @@ impl MCTS {
     /// Run one background-search step without starting a batch that is unlikely to
     /// finish within the available time. A single simulation is preferable near
     /// the deadline because the opponent may move at any moment.
-    pub async fn simulation_step_within(
-        &self,
-        gomoku: &Gomoku,
-        deadline: Option<Instant>,
-    ) {
+    pub async fn simulation_step_within(&self, gomoku: &Gomoku, deadline: Option<Instant>) {
         if let Some(deadline) = deadline {
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining <= self.batch_reserve() {

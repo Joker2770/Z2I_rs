@@ -119,7 +119,7 @@ impl NeuralNetwork {
         cur_color: &Color,
     ) -> Vec<f32> {
         let mut input_tensor_values =
-            vec![0.0; cfg::CHANNEL_SIZE as usize * board_size as usize * board_size as usize];
+            vec![0.0; cfg::INPUT_CHANNEL_SIZE as usize * board_size as usize * board_size as usize];
         let mut first = 0;
         let mut second = 0;
         if *cur_color == Color::Black {
@@ -160,7 +160,11 @@ impl NeuralNetwork {
         // single network represent color-asymmetric rules (e.g. Renju's forbidden
         // black moves) while remaining a harmless constant for symmetric rules.
         // Must match ort_train.rs and train/neural_network.py.
-        let color = if *cur_color == Color::Black { 1.0 } else { -1.0 };
+        let color = if *cur_color == Color::Black {
+            1.0
+        } else {
+            -1.0
+        };
         let plane_size = board_size as usize * board_size as usize;
         for i in 0..plane_size {
             input_tensor_values[3 * plane_size + i] = color;
@@ -278,7 +282,7 @@ async fn infer_batch_async(
     let input_arr = Array::from_shape_vec(
         (
             batch_size,
-            cfg::CHANNEL_SIZE as usize,
+            cfg::INPUT_CHANNEL_SIZE as usize,
             cfg::BOARD_SIZE as usize,
             cfg::BOARD_SIZE as usize,
         ),
@@ -365,7 +369,7 @@ fn infer_batch_sync(
     let input_arr = Array::from_shape_vec(
         (
             batch_size,
-            cfg::CHANNEL_SIZE as usize,
+            cfg::INPUT_CHANNEL_SIZE as usize,
             cfg::BOARD_SIZE as usize,
             cfg::BOARD_SIZE as usize,
         ),

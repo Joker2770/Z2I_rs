@@ -382,12 +382,10 @@ impl Brain {
     /// `None` means the corresponding INFO value was not received.
     fn think_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
-        let turn_deadline = self
-            .timeout_turn
-            .map(|ms| now + Duration::from_millis(ms));
-        let match_deadline = self.time_left.map(|ms| {
-            now + Duration::from_millis(ms.max(0) as u64)
-        });
+        let turn_deadline = self.timeout_turn.map(|ms| now + Duration::from_millis(ms));
+        let match_deadline = self
+            .time_left
+            .map(|ms| now + Duration::from_millis(ms.max(0) as u64));
 
         match (turn_deadline, match_deadline) {
             (Some(turn), Some(match_deadline)) => Some(turn.min(match_deadline)),
@@ -520,8 +518,7 @@ impl Brain {
         let (Some(game), Some(mcts)) = (self.game.as_ref(), self.mcts.as_ref()) else {
             return;
         };
-        mcts
-            .simulation_step_within(game, self.think_deadline())
+        mcts.simulation_step_within(game, self.think_deadline())
             .await;
     }
 
