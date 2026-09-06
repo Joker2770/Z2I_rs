@@ -42,7 +42,7 @@ fn read_f32(file: &mut File) -> io::Result<f32> {
     Ok(f32::from_le_bytes(bytes))
 }
 
-fn read_samples(path: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
+fn read_samples(path: &Path) -> Result<(Vec<Sample>, i32), Box<dyn Error>> {
     let mut file = File::open(path)?;
     let count = read_i32(&mut file)?;
     if count <= 0 {
@@ -51,24 +51,30 @@ fn read_samples(path: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
     let bytes_per_sample = (ACTION_SIZE * 2 + 3)
         .checked_mul(std::mem::size_of::<i32>())
         .ok_or("sample size overflow")?;
-    let expected_size = 4usize
-        .checked_add(
-            (count as usize)
-                .checked_mul(bytes_per_sample)
-                .ok_or("file size overflow")?,
-        )
+    let payload_size = (count as usize)
+        .checked_mul(bytes_per_sample)
+        .ok_or("file size overflow")?;
+    let legacy_size = 4usize
+        .checked_add(payload_size)
         .ok_or("file size overflow")?;
     let file_size = file.metadata()?.len();
-    if file_size < expected_size as u64 {
+    // header is backward compatible: files written by the current self-play carry a
+    // rule field (i32) right after the step count; legacy files have none and default
+    // to FreeStyle (0)
+    let rule = if file_size >= legacy_size as u64 + 4 {
+        read_i32(&mut file)?
+    } else if file_size >= legacy_size as u64 {
+        0
+    } else {
         return Err(format!(
             "incomplete data file {}: step={}, size={}, expected={}",
             path.display(),
             count,
             file_size,
-            expected_size
+            legacy_size + 4
         )
         .into());
-    }
+    };
 
     let mut boards = Vec::with_capacity(count as usize);
     for _ in 0..count {
@@ -111,7 +117,7 @@ fn read_samples(path: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
             last_action: actions[index],
         });
     }
-    Ok(samples)
+    Ok((samples, rule))
 }
 
 fn load_data(directory: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
@@ -122,9 +128,24 @@ fn load_data(directory: &Path) -> Result<Vec<Sample>, Box<dyn Error>> {
     paths.sort();
 
     let mut samples = Vec::new();
+    // rule of the first file read is the reference: files are sorted, so this is stable
+    // across runs and prevents silently mixing samples generated under different rules
+    let mut reference_rule: Option<i32> = None;
     for path in paths {
         match read_samples(&path) {
-            Ok(file_samples) => {
+            Ok((file_samples, rule)) => {
+                match reference_rule {
+                    None => reference_rule = Some(rule),
+                    Some(reference) if rule != reference => {
+                        eprintln!(
+                            "skip data file {}: rule={rule} != reference {reference} \
+                             (mixed-rule training is unsupported)",
+                            path.display()
+                        );
+                        continue;
+                    }
+                    _ => {}
+                }
                 for sample in file_samples {
                     samples.extend(symmetries(sample));
                 }
@@ -325,7 +346,100 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{player_channels, symmetries, Sample, ACTION_SIZE, BOARD_SIZE};
+    use std::fs::File;
+    use std::io::Write;
+    use std::path::Path;
+
+    use super::{
+        load_data, player_channels, read_samples, symmetries, Sample, ACTION_SIZE, BOARD_SIZE,
+    };
+
+    /// Writes a data file in the on-disk layout: header (step, optional rule)
+    /// followed by per-step board(N² i32)/prob(N² f32)/v(i32)/player(i32)/last_action(i32).
+    fn write_sample_file(path: &Path, header_rule: Option<i32>, count: usize) {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&(count as i32).to_le_bytes());
+        if let Some(rule) = header_rule {
+            buf.extend_from_slice(&rule.to_le_bytes());
+        }
+        for _ in 0..count {
+            for _ in 0..ACTION_SIZE {
+                buf.extend_from_slice(&0i32.to_le_bytes());
+            }
+        }
+        for _ in 0..count {
+            for _ in 0..ACTION_SIZE {
+                buf.extend_from_slice(&0f32.to_le_bytes());
+            }
+        }
+        for _ in 0..count {
+            buf.extend_from_slice(&1i32.to_le_bytes());
+        }
+        for _ in 0..count {
+            buf.extend_from_slice(&1i32.to_le_bytes());
+        }
+        for _ in 0..count {
+            buf.extend_from_slice(&0i32.to_le_bytes());
+        }
+        File::create(path).unwrap().write_all(&buf).unwrap();
+    }
+
+    #[test]
+    fn reads_legacy_file_without_rule_as_freestyle() {
+        let dir = std::env::temp_dir().join(format!("z2i_rule_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy");
+        write_sample_file(&path, None, 2);
+
+        let (samples, rule) = read_samples(&path).unwrap();
+        assert_eq!(rule, 0);
+        assert_eq!(samples.len(), 2);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reads_rule_from_new_format_file() {
+        let dir = std::env::temp_dir().join(format!("z2i_rule_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("renju");
+        write_sample_file(&path, Some(4), 3);
+
+        let (samples, rule) = read_samples(&path).unwrap();
+        assert_eq!(rule, 4);
+        assert_eq!(samples.len(), 3);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rejects_truncated_file() {
+        let dir = std::env::temp_dir().join(format!("z2i_rule_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("trunc");
+        write_sample_file(&path, Some(0), 3);
+        // truncate the payload after the header
+        let file = std::fs::read(&path).unwrap();
+        std::fs::write(&path, &file[..8]).unwrap();
+
+        assert!(read_samples(&path).is_err());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_data_skips_files_with_different_rule() {
+        let dir = std::env::temp_dir().join(format!("z2i_rule_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_sample_file(&dir.join("a_freestyle"), Some(0), 1);
+        write_sample_file(&dir.join("b_renju"), Some(4), 1);
+
+        // sorted paths pick "a_freestyle" first -> rule 0 reference, renju file skipped
+        let samples = load_data(&dir).unwrap();
+        assert_eq!(samples.len(), 8); // 1 sample x 8 symmetries
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 
     #[test]
     fn channel_zero_holds_own_stones_for_both_players() {

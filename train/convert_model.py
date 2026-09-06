@@ -157,10 +157,16 @@ def read_raw_features(file_path):
         file_size = path.getsize(file_path)
         with open(file_path, 'rb') as binfile:
             step = int.from_bytes(binfile.read(4), byteorder='little', signed=True)
-            if step <= 0 or file_size < 4 + step * bytes_per_step:
+            # header is backward compatible: files written by the current self-play carry
+            # a rule field (i32) right after step; legacy files have none. raw features are
+            # rule-agnostic so only the field is skipped here (byte alignment), not filtered
+            old_expected = 4 + step * bytes_per_step
+            if step <= 0 or file_size < old_expected:
                 print(f"skip incomplete data file {file_path}: "
                       f"step={step}, size={file_size}")
                 return None
+            if file_size >= old_expected + 4:
+                binfile.seek(4, 1)  # skip rule field
             board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, n, n)
             binfile.seek(step * N2 * 4, 1)  # skip prob
             _ = binfile.read(step * 4)     # skip v

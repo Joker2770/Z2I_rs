@@ -163,7 +163,11 @@ impl SelfPlay {
                 "Self play: total step num = {} winner = {}",
                 step, win_col_2_i
             );
-            // length marker guards the degenerate zero-move case; the winner is implied by moves
+            // length marker guards the degenerate zero-move case; the winner is implied by moves;
+            // the rule flag is hashed too so that identical move sequences played under different
+            // rules map to distinct data files
+            let rule_bits = game_ref.borrow().get_rule().bits();
+            hasher.update(&[rule_bits]);
             hasher.update(step.to_ne_bytes());
             let hash_rst = hasher.finalize();
             let hex_string = hex::encode(hash_rst);
@@ -183,6 +187,9 @@ impl SelfPlay {
             let tmp_path = new_path.with_extension("part");
             let mut file = fs::File::create(&tmp_path).expect("Unable to create file");
             _ = file.write_all(&(step as i32).to_ne_bytes());
+            // header carries the rule flag actually used for self-play so training
+            // sides can reject samples generated under a different rule
+            _ = file.write_all(&(rule_bits as i32).to_ne_bytes());
 
             for i in 0..step {
                 for j in 0..board_size {

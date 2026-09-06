@@ -2,6 +2,9 @@ config = {
     # gomoku
     'n': 15,                                    # board size
     'n_in_row': 5,                              # n in row
+    # rule flag of the self-play samples, matching DEFAULT_RULE_FLAG in src/configuration.rs
+    # (RuleFlag bits: 0 FreeStyle, 1 Standard, 4 Renju, 8 Caro)
+    'rule': 0,                                  # FreeStyle
 
     # mcts
     #'libtorch_use_gpu' : True,                  # libtorch use cuda

@@ -63,6 +63,9 @@ class Learner():
         self.n = config['n']
         self.n_in_row = config['n_in_row']
         self.action_size = config['action_size']
+        # expected rule of the self-play samples (0 = FreeStyle); files carrying a
+        # different rule in their header are rejected, see load_samples
+        self.rule = config['rule']
 
         # train
         self.num_iters = config['num_iters']
@@ -191,13 +194,26 @@ class Learner():
             try:
                 with open(file_path, 'rb') as binfile:
                     step = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
-                    expected_size = 4 + step * bytes_per_step
+                    # header is backward compatible: files written by the current self-play
+                    # carry a rule field (i32) right after step; legacy files have none and
+                    # default to FreeStyle (0)
+                    payload_bytes = step * bytes_per_step
+                    old_expected = 4 + payload_bytes
+                    new_expected = old_expected + 4
                     # the self-play process may still be writing, or a previous interrupted
                     # run left a partial file; skip size-mismatched files to avoid ValueError
                     # from reshape
-                    if step <= 0 or file_size < expected_size:
+                    if step <= 0 or file_size < old_expected:
                         print(f"skip incomplete data file {file_path}: "
-                              f"step={step}, size={file_size}, expected={expected_size}")
+                              f"step={step}, size={file_size}, expected={new_expected}")
+                        continue
+                    if file_size >= new_expected:
+                        rule = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
+                    else:
+                        rule = 0
+                    if rule != self.rule:
+                        print(f"skip data file {file_path}: rule={rule} != expected "
+                              f"{self.rule} (mixed-rule training is unsupported)")
                         continue
                     # bulk read to avoid element-wise Python-level IO
                     board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)

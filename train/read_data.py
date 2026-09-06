@@ -11,6 +11,12 @@ if __name__ == '__main__':
         step = binfile.read(4)
         step = int().from_bytes(step, byteorder='little', signed=True)
         print("step = ",step)
+        # header is backward compatible: new files carry a rule field (i32) right after
+        # step; legacy files have none. skip it when present so reads stay byte-aligned
+        bytes_per_step = BOARD_SIZE * BOARD_SIZE * 4 * 2 + 3 * 4
+        if size >= 4 + step * bytes_per_step + 4:
+            rule = int().from_bytes(binfile.read(4), byteorder='little', signed=True)
+            print("rule = ", rule)
         board = np.zeros((step,BOARD_SIZE*BOARD_SIZE))
         for i in range(step):
            for j in range(BOARD_SIZE*BOARD_SIZE):
