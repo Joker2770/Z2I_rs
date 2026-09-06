@@ -74,7 +74,17 @@ class NeuralNetWork(nn.Module):
         self.v_conv = nn.Conv2d(num_channels, 2, kernel_size=1, padding=0, bias=False)
         self.v_bn = nn.BatchNorm2d(num_features=2)
 
-        self.v_fc1 = nn.Linear(2 * n ** 2, 256)
+        # KataGo-style global-feature injection into the value head: append the
+        # constant absolute side-to-move color (ch3, +1 Black / -1 White) to the
+        # value-head input so the value head can represent color-asymmetric rules
+        # (e.g. Renju). The scale is zero-initialized, so symmetric rules are
+        # untouched at init and the data decides whether absolute color matters.
+        self.value_color_inject = input_channel_size >= 4
+        if self.value_color_inject:
+            self.color_scale = nn.Parameter(torch.zeros(1))
+            self.v_fc1 = nn.Linear(2 * n ** 2 + 1, 256)
+        else:
+            self.v_fc1 = nn.Linear(2 * n ** 2, 256)
         self.v_fc2 = nn.Linear(256, 1)
         self.tanh = nn.Tanh()
 
@@ -95,7 +105,12 @@ class NeuralNetWork(nn.Module):
         v = self.v_bn(v)
         v = self.relu(v)
 
-        v = self.v_fc1(v.view(v.size(0), -1))
+        v = v.view(v.size(0), -1)
+        if self.value_color_inject:
+            # ch3 is constant across the board, so read a single cell and scale it.
+            color = inputs[:, 3, 0, 0].unsqueeze(1)  # (B, 1)
+            v = torch.cat((v, self.color_scale * color), dim=1)
+        v = self.v_fc1(v)
         v = self.relu(v)
         v = self.v_fc2(v)
         v = self.tanh(v)
@@ -119,7 +134,7 @@ class AlphaLoss(nn.Module):
 class NeuralNetWorkWrapper:
     """Own the model, optimizer, device selection, and data conversion."""
 
-    def __init__(self, lr, l2, num_layers, num_channels, n, action_size, input_channel_size=3):
+    def __init__(self, lr, l2, num_layers, num_channels, n, action_size, input_channel_size=4):
         """ init
         """
         self.lr = lr
@@ -204,7 +219,7 @@ class NeuralNetWorkWrapper:
         return np.exp(log_ps.cpu().detach().numpy()), vs.cpu().detach().numpy()
 
     def _data_convert(self, board_batch, last_action_batch, cur_player_batch):
-        """Convert board features to [batch, 3, board, board] tensors."""
+        """Convert board features to [batch, input_channel_size, board, board] tensors."""
         n = self.n
 
         board_batch = torch.as_tensor(
@@ -232,7 +247,16 @@ class NeuralNetWorkWrapper:
             ys = torch.from_numpy(pos % n)
             state2[rows, 0, xs, ys] = 1
 
-        res = torch.cat((state0, state1, state2), dim=1)
+        # channel 3: constant color plane carrying the absolute side-to-move color
+        # (+1 Black / -1 White). The only color-asymmetric input; required to
+        # represent color-asymmetric rules (e.g. Renju) and a harmless constant
+        # for symmetric rules. Must match ortopt.rs and ort_train.rs.
+        if self.input_channel_size >= 4:
+            color = np.where(cur_player == 1, 1.0, -1.0).astype(np.float32)
+            state3 = torch.from_numpy(color).view(-1, 1, 1, 1).expand(-1, 1, n, n)
+            res = torch.cat((state0, state1, state2, state3), dim=1)
+        else:
+            res = torch.cat((state0, state1, state2), dim=1)
         return res.cuda() if self.is_cuda_available else res
 
     def set_learning_rate(self, lr):
@@ -294,13 +318,14 @@ if __name__ == '__main__':
     print("load model")
     net.load_model("/data/AlphaZero-Onnx/python/mymodel")
     batch_all = 5
-    state_batch = np.zeros((batch_all+1,3,15,15))
+    state_batch = np.zeros((batch_all+1,4,15,15))
 
     state_batch[batch_all][1][0][0] = 1 # gomoku.execute_move(0);
     state_batch[batch_all][0][0][1] = 1 #   gomoku.execute_move(1);
     state_batch[batch_all][1][3][4] = 1 #   gomoku.execute_move(3*15+4=49);
 
     state_batch[batch_all][2][3][4] = 1 # last move
+    state_batch[batch_all][3][0][0] = 1 # color plane: black to move
 
 
     if net.is_cuda_available:

@@ -13,7 +13,9 @@ Flow:
    - narrowing channels: keep the first C_B channels (some error, recovered by distillation)
    - layer count: copy the first min(K_A, K_B) residual blocks; added blocks are near-identity
      initialized (conv ~ 0 perturbation)
-   - the policy/value head FC input dims don't depend on backbone channels, copied as-is
+   - the policy head FC is copied with overlapping dims; the value-head FC gains one
+     input column (the color feature) when hot-starting a 3-channel model into the
+     4-channel architecture, and that new column is perturbed like a widened channel
 4. Distill: minimize CE(soft pi_A || pi_B) + MSE(v_A, v_B) on replay data
 5. Save B's .pkl and .onnx (reusing NeuralNetWorkWrapper.save_model)
 
@@ -86,12 +88,12 @@ def copy_bn(dst, src, new_gamma=PERTURB):
             dst.weight[c:].fill_(new_gamma)
 
 
-def copy_fc(dst, src):
-    """Copy an FC layer as-is (requires matching input/output dims)"""
-    with torch.no_grad():
-        dst.weight.copy_(src.weight)
-        if dst.bias is not None and src.bias is not None:
-            dst.bias.copy_(src.bias)
+def copy_fc(dst, src, perturb=PERTURB):
+    """Copy an FC layer. An FC weight is 2-D (out, in); copy_conv already copies the
+       overlapping rows/cols element-wise and perturbs any added ones. That is exactly
+       what is needed when v_fc1 gains one input column (the value-head color feature)
+       during a 3-channel -> 4-channel hot-start, so reuse it here."""
+    copy_conv(dst, src, perturb)
 
 
 def init_identity(block, perturb=PERTURB):
@@ -108,8 +110,10 @@ def init_identity(block, perturb=PERTURB):
 
 
 def map_model(src_net, dst_net, perturb=PERTURB):
-    """Map the source network A's structure onto target network B as initial weights
-       requires: same n, action_size and input_channel on both sides
+    """Map the source network A's structure onto target network B as initial weights.
+       n and action_size must match; input channels may differ, so a legacy 3-channel
+       model can be hot-started into the 4-channel architecture (new input channels and
+       the value-head color column are perturbed, everything else copied element-wise).
     """
     src_blocks = src_net.res_layers
     dst_blocks = dst_net.res_layers
@@ -140,8 +144,25 @@ def map_model(src_net, dst_net, perturb=PERTURB):
     copy_fc(dst_net.v_fc1, src_net.v_fc1)
     copy_fc(dst_net.v_fc2, src_net.v_fc2)
 
+    # value-head color-injection scale. When both sides carry the 4th color plane
+    # (same input channels) copy it so a resize keeps the color switch intact; when
+    # only the target injects color (3ch -> 4ch hot-start) it stays at its zero
+    # initial value, keeping the 4-channel model equivalent to the source.
+    if getattr(src_net, 'value_color_inject', False) and getattr(dst_net, 'value_color_inject', False):
+        with torch.no_grad():
+            dst_net.color_scale.copy_(src_net.color_scale)
+
     return (f"mapped {shared}/{len(dst_blocks)} blocks from source, "
             f"{len(dst_blocks) - shared} blocks identity-init")
+
+
+def detect_input_channels(pkl_path):
+    """Read a checkpoint's input channel count from the first conv's weight."""
+    state = torch.load(pkl_path + '.pkl', map_location='cpu', weights_only=True)
+    key = 'res_layers.0.conv1.weight'
+    if key not in state['network']:
+        raise RuntimeError(f"cannot detect input channels: '{key}' missing from {pkl_path}.pkl")
+    return int(state['network'][key].shape[1])
 
 
 # ---------------------------------------------------------------- data reading
@@ -227,7 +248,7 @@ def state_of(wrapper, boards, colors, lasts, idx):
     return wrapper._data_convert(*zip(*feats))
 
 
-def evaluate_pair(a_net, b_net, wrapper_a, boards, colors, lasts, batch=1024):
+def evaluate_pair(a_net, b_net, wrapper_a, wrapper_b, boards, colors, lasts, batch=1024):
     """Report B's mean KL(p_A||p_B), |dv| and policy top-1 agreement relative to A"""
     n_data = len(boards)
     total_kl, total_dv, total_top1, cnt = 0.0, 0.0, 0, 0
@@ -235,10 +256,13 @@ def evaluate_pair(a_net, b_net, wrapper_a, boards, colors, lasts, batch=1024):
     b_net.eval()
     for start in range(0, n_data, batch):
         idx = np.arange(start, min(start + batch, n_data))
-        state = state_of(wrapper_a, boards, colors, lasts, idx)
+        # A and B may use different input channel counts (e.g. 3ch -> 4ch), so
+        # encode the same position once per network via its own wrapper.
+        state_a = state_of(wrapper_a, boards, colors, lasts, idx)
+        state_b = state_of(wrapper_b, boards, colors, lasts, idx)
         with torch.no_grad():
-            log_pa, va = a_net(state)
-            log_pb, vb = b_net(state)
+            log_pa, va = a_net(state_a)
+            log_pb, vb = b_net(state_b)
             pa = torch.exp(log_pa)
             total_kl += float(torch.sum(pa * (log_pa - log_pb)))
             total_dv += float(torch.sum(torch.abs(va - vb)))
@@ -259,12 +283,15 @@ def distill(wrapper_a, wrapper_b, boards, colors, lasts,
     for step in range(1, steps + 1):
         b_net.train()
         idx = rng.integers(0, n_data, size=batch_size)
-        state = state_of(wrapper_a, boards, colors, lasts, idx)
+        # A and B may use different input channel counts (e.g. 3ch -> 4ch), so
+        # encode the same position once per network via its own wrapper.
+        state_a = state_of(wrapper_a, boards, colors, lasts, idx)
+        state_b = state_of(wrapper_b, boards, colors, lasts, idx)
 
         with torch.no_grad():
-            log_pa, va = a_net(state)
+            log_pa, va = a_net(state_a)
             pa = torch.exp(log_pa)
-        log_pb, vb = b_net(state)
+        log_pb, vb = b_net(state_b)
 
         policy_loss = -torch.mean(torch.sum(pa * log_pb, dim=1))
         value_loss = torch.mean(torch.pow(vb - va, 2))
@@ -309,6 +336,28 @@ def self_test():
     assert kl < 0.05, f"KL too large: {kl}"
     assert dv < 0.1, f"|dv| too large: {dv}"
 
+    # scenario 1b: hot-start a legacy 3-channel model into the 4-channel
+    # architecture (same layers/channels, one extra input channel). With the color
+    # plane zeroed and color_scale=0, the target must reproduce the source exactly;
+    # with a nonzero color plane the output stays finite and only shifts slightly.
+    dst_hot = NeuralNetWork(3, 64, n, action, 4)
+    print(map_model(src, dst_hot))
+    dst_hot.eval()
+    assert dst_hot.color_scale.item() == 0.0
+    assert dst_hot.v_fc1.in_features == 2 * n * n + 1
+    x_hot = torch.zeros(4, 4, n, n)
+    x_hot[:, :3] = x
+    with torch.no_grad():
+        _, va_hot = src(x)
+        _, vb_hot = dst_hot(x_hot)
+    print(f"hot-start (ch3=0): |dv|={float(torch.mean(torch.abs(va_hot - vb_hot))):.6f}")
+    assert torch.allclose(va_hot, vb_hot, atol=1e-5), "zero color plane must reproduce the 3-channel model"
+    x_hot[:, 3] = 1.0
+    with torch.no_grad():
+        _, vc_hot = dst_hot(x_hot)
+    assert torch.isfinite(vc_hot).all()
+    print(f"hot-start (ch3=1): |dv|={float(torch.mean(torch.abs(va_hot - vc_hot))):.6f}")
+
     # scenario 2: narrow -> forward runs and stays finite
     dst2 = NeuralNetWork(3, 32, n, action, 3)
     print(map_model(src, dst2))
@@ -348,6 +397,10 @@ def main():
     parser.add_argument('--include-archive', action='store_true',
                         help='include data_archive history files as candidates')
     parser.add_argument('--print-every', type=int, default=50)
+    parser.add_argument('--src-input-channels', type=int, default=None,
+                        help='source model input channel count (default: auto-detect from the .pkl)')
+    parser.add_argument('--dst-input-channels', type=int, default=None,
+                        help=f"target model input channel count (default: config = {config['input_channel_size']})")
     parser.add_argument('--self-test', action='store_true', help='run only the structural mapping self-test, no disk access')
     args = parser.parse_args()
 
@@ -362,15 +415,18 @@ def main():
 
     n, action = config['n'], config['action_size']
 
-    # source network A (structure matches config)
+    # source network A: auto-detect its input channels so a legacy 3-channel
+    # checkpoint can be hot-started into the current 4-channel architecture
+    src_input_channels = args.src_input_channels or detect_input_channels(args.src)
+    dst_input_channels = args.dst_input_channels or config['input_channel_size']
     wrapper_a = NeuralNetWorkWrapper(config['lr'], config['l2'], config['num_layers'],
                                      config['num_channels'], n, action,
-                                     config['input_channel_size'])
+                                     src_input_channels)
     wrapper_a.load_model(args.src)
 
     # target network B
     wrapper_b = NeuralNetWorkWrapper(args.lr, config['l2'], args.layers, args.channels,
-                                     n, action, config['input_channel_size'])
+                                     n, action, dst_input_channels)
     wrapper_b.set_learning_rate(args.lr)
 
     print(map_model(wrapper_a.neural_network, wrapper_b.neural_network))
@@ -386,7 +442,7 @@ def main():
 
     print("before distill:")
     kl, dv, top1 = evaluate_pair(wrapper_a.neural_network, wrapper_b.neural_network,
-                                 wrapper_a, boards, colors, lasts)
+                                 wrapper_a, wrapper_b, boards, colors, lasts)
     print(f"  KL={kl:.6f}, |dv|={dv:.6f}, top1={top1:.4f}")
 
     if args.steps > 0:
@@ -394,7 +450,7 @@ def main():
                 args.steps, args.batch, args.print_every)
         print("after distill:")
         kl, dv, top1 = evaluate_pair(wrapper_a.neural_network, wrapper_b.neural_network,
-                                     wrapper_a, boards, colors, lasts)
+                                     wrapper_a, wrapper_b, boards, colors, lasts)
         print(f"  KL={kl:.6f}, |dv|={dv:.6f}, top1={top1:.4f}")
 
     wrapper_b.save_model(args.dst)

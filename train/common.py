@@ -23,7 +23,7 @@ config = {
     'num_layers' : 4,                           # residual layer number
     'epochs': 5,                                # train epochs
     'batch_size': 512,                          # batch size
-    'input_channel_size':3,                            # board(cnn) input channel
+    'input_channel_size':4,                            # board(cnn) input channel
 
     # train
     'num_iters': 10000,                         # train iterations

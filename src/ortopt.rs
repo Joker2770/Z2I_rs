@@ -113,7 +113,6 @@ impl NeuralNetwork {
     }
 
     pub fn transform_board_2_tensor(
-        &self,
         board: &Board,
         board_size: u8,
         last_move: i16,
@@ -156,11 +155,21 @@ impl NeuralNetwork {
             input_tensor_values
                 [2 * board_size as usize * board_size as usize + last_move as usize] = 1.0;
         }
+        // Channel 3 is a constant plane carrying the absolute side-to-move color
+        // (+1 Black / -1 White). It is the only color-asymmetric input and lets a
+        // single network represent color-asymmetric rules (e.g. Renju's forbidden
+        // black moves) while remaining a harmless constant for symmetric rules.
+        // Must match ort_train.rs and train/neural_network.py.
+        let color = if *cur_color == Color::Black { 1.0 } else { -1.0 };
+        let plane_size = board_size as usize * board_size as usize;
+        for i in 0..plane_size {
+            input_tensor_values[3 * plane_size + i] = color;
+        }
         input_tensor_values
     }
 
     pub fn transform_gomoku_2_tensor(&self, gomoku: &Gomoku) -> Vec<f32> {
-        self.transform_board_2_tensor(
+        Self::transform_board_2_tensor(
             gomoku.get_board(),
             gomoku.get_board_size(),
             gomoku.get_last_move(),
@@ -438,4 +447,60 @@ fn parse_outputs(
         results.push((exps, value));
     }
     Ok(results)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_board() -> Board {
+        vec![
+            vec![Color::Black, Color::White, Color::Blank],
+            vec![Color::Blank, Color::Blank, Color::Blank],
+            vec![Color::Blank, Color::Blank, Color::Blank],
+        ]
+    }
+
+    #[test]
+    fn color_channel_is_constant_plus_one_for_black() {
+        let board = make_board();
+        let tensor = NeuralNetwork::transform_board_2_tensor(&board, 3, 2, &Color::Black);
+        assert_eq!(tensor.len(), 4 * 9);
+
+        let plane = 9;
+        // ch3 is a constant +1 plane when Black is to move
+        assert!(tensor[3 * plane..4 * plane].iter().all(|&x| x == 1.0));
+        // ch0/ch1 unchanged: own=Black at idx 0, opponent=White at idx 1
+        assert_eq!(tensor[0], 1.0);
+        assert_eq!(tensor[plane + 1], 1.0);
+        // ch2 last-move marker at index 2
+        assert_eq!(tensor[2 * plane + 2], 1.0);
+    }
+
+    #[test]
+    fn color_channel_is_constant_minus_one_for_white() {
+        let board = make_board();
+        let tensor = NeuralNetwork::transform_board_2_tensor(&board, 3, 2, &Color::White);
+        assert_eq!(tensor.len(), 4 * 9);
+
+        let plane = 9;
+        // ch3 is a constant -1 plane when White is to move
+        assert!(tensor[3 * plane..4 * plane].iter().all(|&x| x == -1.0));
+        // perspective swap: own=White now lives in ch0 (idx 1), opponent=Black in ch1 (idx 0)
+        assert_eq!(tensor[plane], 1.0);
+        assert_eq!(tensor[1], 1.0);
+        // ch2 last-move marker still at index 2
+        assert_eq!(tensor[2 * plane + 2], 1.0);
+    }
+
+    #[test]
+    fn color_channel_absent_when_last_move_negative() {
+        let board = make_board();
+        let tensor = NeuralNetwork::transform_board_2_tensor(&board, 3, -1, &Color::White);
+        let plane = 9;
+        // marker channel is all zeros when there is no last move
+        assert!(tensor[2 * plane..3 * plane].iter().all(|&x| x == 0.0));
+        // color channel is still present and constant
+        assert!(tensor[3 * plane..4 * plane].iter().all(|&x| x == -1.0));
+    }
 }

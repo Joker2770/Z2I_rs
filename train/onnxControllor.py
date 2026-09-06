@@ -74,7 +74,7 @@ import numpy as np
 if __name__ == "__main__":
     model = ONNXModel(
         onnx_path=r"./mymodel.onnx")
-    obs = np.ones((1, 3, 15, 15)).astype(np.float32)
+    obs = np.ones((1, 4, 15, 15)).astype(np.float32)
     from time import time
     t = time()
     for _ in range(1600):

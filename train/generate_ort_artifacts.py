@@ -11,7 +11,7 @@
     optimizer_model.onnx  -- optimizer (AdamW) graph
     checkpoint/           -- initial checkpoint directory
 
-The Rust binary feeds `board` (shape [batch, 3, 15, 15]), `target_p`
+The Rust binary feeds `board` (shape [batch, 4, 15, 15]), `target_p`
 ([batch, 225]) and `target_v` ([batch, 1]) and later exports the trained
 model with output names ["P", "V"]. All of these names/shapes are matched
 here.
@@ -47,7 +47,7 @@ from pathlib import Path
 
 N = 15
 ACTION_SIZE = N * N
-INPUT_CHANNEL_SIZE = 3
+INPUT_CHANNEL_SIZE = 4
 
 
 # --------------------------------------------------------------------------
@@ -132,8 +132,14 @@ def _requires_grad_names(onnx_model) -> list:
             if len(node.input) > 2 and node.input[2]:
                 trainable.add(node.input[2])
 
-    # Preserve the original order of initializers for deterministic output.
+    # The value-head color-injection scale is a scalar nn.Parameter that flows
+    # through a Mul with a dynamic input, so the exporter keeps it as an
+    # initializer (not folded). It must stay trainable, otherwise ORT training
+    # would freeze the color switch.
     initializer_names = [initializer.name for initializer in onnx_model.graph.initializer]
+    trainable |= {name for name in initializer_names if 'color_scale' in name}
+
+    # Preserve the original order of initializers for deterministic output.
     return [name for name in initializer_names if name in trainable]
 
 

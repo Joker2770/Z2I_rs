@@ -206,10 +206,14 @@ fn player_channels(current_player: i32, stone: i32) -> (f32, f32) {
     (own, opponent)
 }
 
-fn make_batch(
+/// Builds the ndarray feature/label tensors for a batch without touching the
+/// ONNX Runtime, so the channel layout can be unit-tested without a training
+/// dylib present.
+fn build_batch_arrays(
     samples: &[Sample],
-) -> Result<(Tensor<f32>, Tensor<f32>, Tensor<f32>), Box<dyn Error>> {
-    let mut states = Array4::<f32>::zeros((samples.len(), 3, BOARD_SIZE, BOARD_SIZE));
+) -> (Array4<f32>, Array2<f32>, Array2<f32>) {
+    let mut states =
+        Array4::<f32>::zeros((samples.len(), cfg::CHANNEL_SIZE as usize, BOARD_SIZE, BOARD_SIZE));
     let mut policies = Array2::<f32>::zeros((samples.len(), ACTION_SIZE));
     let mut values = Array2::<f32>::zeros((samples.len(), 1));
 
@@ -225,6 +229,9 @@ fn make_batch(
             let column = position % BOARD_SIZE;
             states[[batch_index, 0, row, column]] = own_channel;
             states[[batch_index, 1, row, column]] = opponent_channel;
+            // Channel 3: constant color plane (+1 Black / -1 White), matching
+            // ortopt.rs and train/neural_network.py.
+            states[[batch_index, 3, row, column]] = sample.current_player as f32;
             policies[[batch_index, position]] = sample.policy[position];
         }
         if (0..ACTION_SIZE as i32).contains(&sample.last_action) {
@@ -234,6 +241,13 @@ fn make_batch(
         values[[batch_index, 0]] = sample.value;
     }
 
+    (states, policies, values)
+}
+
+fn make_batch(
+    samples: &[Sample],
+) -> Result<(Tensor<f32>, Tensor<f32>, Tensor<f32>), Box<dyn Error>> {
+    let (states, policies, values) = build_batch_arrays(samples);
     Ok((
         Tensor::from_array(states)?,
         Tensor::from_array(policies)?,
@@ -350,8 +364,11 @@ mod tests {
     use std::io::Write;
     use std::path::Path;
 
+    use ndarray::s;
+
     use super::{
-        load_data, player_channels, read_samples, symmetries, Sample, ACTION_SIZE, BOARD_SIZE,
+        build_batch_arrays, cfg, load_data, player_channels, read_samples, symmetries, Sample,
+        ACTION_SIZE, BOARD_SIZE,
     };
 
     /// Writes a data file in the on-disk layout: header (step, optional rule)
@@ -476,5 +493,38 @@ mod tests {
         assert_eq!(variants[1].last_action, (ACTION_SIZE - 1) as i32);
         assert_eq!(variants[6].board[0], 1);
         assert_eq!(variants[6].last_action, 0);
+    }
+
+    #[test]
+    fn build_batch_arrays_carries_constant_color_channel() {
+        let samples = vec![
+            Sample {
+                board: [0; ACTION_SIZE],
+                policy: [0.0; ACTION_SIZE],
+                value: 1.0,
+                current_player: 1,
+                last_action: 1,
+            },
+            Sample {
+                board: [0; ACTION_SIZE],
+                policy: [0.0; ACTION_SIZE],
+                value: -1.0,
+                current_player: -1,
+                last_action: -1,
+            },
+        ];
+
+        let (states, _policies, _values) = build_batch_arrays(&samples);
+        assert_eq!(
+            states.shape(),
+            &[2, cfg::CHANNEL_SIZE as usize, BOARD_SIZE, BOARD_SIZE][..]
+        );
+
+        // sample 0: Black to move -> ch3 is a constant +1 plane, marker at position 1
+        assert!(states.slice(s![0, 3, .., ..]).iter().all(|&x| x == 1.0));
+        assert_eq!(states[[0, 2, 0, 1]], 1.0);
+        // sample 1: White to move -> ch3 is a constant -1 plane, no marker
+        assert!(states.slice(s![1, 3, .., ..]).iter().all(|&x| x == -1.0));
+        assert!(states.slice(s![1, 2, .., ..]).iter().all(|&x| x == 0.0));
     }
 }
