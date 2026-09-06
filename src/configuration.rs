@@ -18,6 +18,8 @@ pub mod cfg {
     pub const DIRI: f64 = 0.3;
     #[cfg(feature = "tic-tac-toe")]
     pub const DIRICHLET_ALPHA: f64 = 0.35;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 2;
 
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const BOARD_SIZE: u8 = 15;
@@ -40,6 +42,9 @@ pub mod cfg {
     // Dirichlet concentration parameter α (0.3 in the AlphaZero paper)
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const DIRICHLET_ALPHA: f64 = 0.3;
+    // suggest < 256, and >= 1
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
 
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
@@ -96,8 +101,6 @@ pub mod cfg {
     // output and needless overhead
     pub const RENDER_AT_SELF_PLAY: bool = true;
     pub const INFER_TASK_WAIT_US: u16 = 2;
-    // suggest < 256, and >= 1
-    pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
     // open_mind thinking output: interval between consecutive reports (ms)
     pub const OPEN_MIND_REPORT_INTERVAL_MS: u64 = 500;
     // max children kept in open_mind thinking output (filtered by visit count)
