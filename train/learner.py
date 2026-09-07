@@ -1,4 +1,3 @@
-from collections import deque
 from os import path
 import os
 import random
@@ -61,26 +60,10 @@ class Learner():
     def __init__(self, config):
         """Create the trainer from the shared training configuration."""
         self.n = config['n']
-        self.n_in_row = config['n_in_row']
         self.action_size = config['action_size']
         # expected rule of the self-play samples (0 = FreeStyle); files carrying a
         # different rule in their header are rejected, see load_samples
         self.rule = config['rule']
-
-        # train
-        self.num_iters = config['num_iters']
-        self.num_eps = config['num_eps']
-        self.num_train_threads = config['num_train_threads']
-        self.check_freq = config['check_freq']
-        self.num_contest = config['num_contest']
-        self.dirichlet_alpha = config['dirichlet_alpha']
-        self.temp = config['temp']
-        self.update_threshold = config['update_threshold']
-        self.num_explore = config['num_explore']
-
-        self.examples_buffer = deque([], maxlen=config['examples_buffer_max_len'])
-
-        self.use_GPU = config['train_use_gpu']
 
         # neural network
         self.batch_size = config['batch_size']
@@ -127,7 +110,7 @@ class Learner():
 
         model_path = path.join(model_dir, str(model_id+1))
         self.nnet.save_model(model_path)
-        if self.use_GPU:
+        if config['train_use_gpu']:
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -175,11 +158,8 @@ class Learner():
         return l
 
     def load_samples(self, files):
-        """load self.examples_buffer
-           files: data file path list (selected by the replay window)
-        """
-        BOARD_SIZE = self.n
-        N2 = BOARD_SIZE * BOARD_SIZE
+        """Load samples from files selected by the replay window."""
+        N2 = self.n * self.n
         # bytes per sample: board (N2 i32) + prob (N2 f32) + v/color/last_action (3 i32)
         bytes_per_step = N2 * 4 + N2 * 4 + 3 * 4
         train_examples = []
@@ -216,7 +196,9 @@ class Learner():
                               f"{self.rule} (mixed-rule training is unsupported)")
                         continue
                     # bulk read to avoid element-wise Python-level IO
-                    board = np.frombuffer(binfile.read(step * N2 * 4), dtype='<i4').reshape(step, BOARD_SIZE, BOARD_SIZE)
+                    board = np.frombuffer(
+                        binfile.read(step * N2 * 4), dtype='<i4'
+                    ).reshape(step, self.n, self.n)
                     prob = np.frombuffer(binfile.read(step * N2 * 4), dtype='<f4').reshape(step, N2)
                     v = np.frombuffer(binfile.read(step * 4), dtype='<i4')
                     color = np.frombuffer(binfile.read(step * 4), dtype='<i4')
@@ -244,7 +226,7 @@ if __name__ == '__main__':
         assert sys.argv[1] == "train", sys.argv[1]
         weight_file = path.join(BUILD_DIR, "current_and_best_weight.txt")
         with open(weight_file, 'r') as f:
-            current_id, best_id =  f.readline().split(" ")
+            current_id, best_id = f.readline().split()
             current_id = int(current_id)
         le.learn(model_dir=model_dir, model_id=current_id)
         with open(weight_file, 'w') as f:
