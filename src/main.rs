@@ -771,7 +771,7 @@ async fn run_protocol() {
                     _ => {}
                 }
             }
-            "ABOUT" => println!("name=\"Z2I_rs\", version=\"0.1.0\", author=\"Joker2770\""),
+            "ABOUT" => println!("name=\"Z2I_rs\", version=\"0.1.1\", author=\"Joker2770\""),
             "END" => break,
             _ => println!("UNKNOWN"),
         }

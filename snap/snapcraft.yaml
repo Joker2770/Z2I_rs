@@ -1,6 +1,6 @@
 name: z2i-rs
 base: core24
-version: '0.1.0'
+version: '0.1.1'
 summary: Gomoku/Renju AI engine with neural network and MCTS
 description: |
   Z2I_rs is a Gomoku/Renju AI engine based on a neural network and Monte Carlo
