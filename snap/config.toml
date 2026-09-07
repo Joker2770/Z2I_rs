@@ -32,12 +32,12 @@ open_mind = false
 enable_ponder = true
 # Minimum remaining time (milliseconds) before starting a full batch.
 # Tune for the target machine and model; increase it on slower systems.
-time_reserve_ms = 1800
+time_reserve_ms = 2000
 # Minimum remaining time (milliseconds) before starting one final simulation.
 # Increase it if a single simulation is slow or the system is heavily loaded.
-single_sim_reserve_ms = 400
+single_sim_reserve_ms = 1000
 # Time kept for applying and reporting the selected move (milliseconds).
-final_move_reserve_ms = 100
+final_move_reserve_ms = 800
 
 [ONNXRUNTIME]
 # Number of intra-op ONNX Runtime threads used for each inference session.
