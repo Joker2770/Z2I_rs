@@ -20,6 +20,12 @@ pub mod cfg {
     pub const DIRICHLET_ALPHA: f64 = 0.35;
     #[cfg(feature = "tic-tac-toe")]
     pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 2;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const SIMS_BOOST_EVERY: u16 = 160;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const SIMS_BOOST_STEP: usize = 4;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const SIMS_CAP: usize = 32;
 
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const BOARD_SIZE: u8 = 15;
@@ -45,6 +51,17 @@ pub mod cfg {
     // suggest < 256, and >= 1
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const DEFAULT_SIM_PER_BATCH_NUM: u8 = 16;
+    // simulation count grows with weight generation (shared by self-play and
+    // acceptance evaluation; equal sims on both sides for fairness):
+    // sims = min(DEFAULT_SIMULATION_NUM + (weight_id / SIMS_BOOST_EVERY) * SIMS_BOOST_STEP, SIMS_CAP)
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const SIMS_BOOST_EVERY: u16 = 20;
+    // Colab T4: growth step and cap lowered together so high-generation sim counts
+    // stay feasible on 2 vCPUs
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const SIMS_BOOST_STEP: usize = 64;
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const SIMS_CAP: usize = 1200;
 
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
@@ -71,14 +88,6 @@ pub mod cfg {
     // evaluation (initial 1500, K factor 32)
     pub const ELO_INITIAL: f64 = 1500.0;
     pub const ELO_K: f64 = 32.0;
-    // simulation count grows with weight generation (shared by self-play and
-    // acceptance evaluation; equal sims on both sides for fairness):
-    // sims = min(DEFAULT_SIMULATION_NUM + (weight_id / SIMS_BOOST_EVERY) * SIMS_BOOST_STEP, SIMS_CAP)
-    pub const SIMS_BOOST_EVERY: u16 = 20;
-    // Colab T4: growth step and cap lowered together so high-generation sim counts
-    // stay feasible on 2 vCPUs
-    pub const SIMS_BOOST_STEP: usize = 64;
-    pub const SIMS_CAP: usize = 1200;
     // 0 - free-style
     // 1 - standard
     // 4 - renju
