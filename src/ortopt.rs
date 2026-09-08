@@ -162,8 +162,10 @@ impl NeuralNetwork {
         // Must match ort_train.rs and train/neural_network.py.
         let color = if *cur_color == Color::Black {
             1.0
-        } else {
+        } else if *cur_color == Color::White {
             -1.0
+        } else {
+            0.0
         };
         let plane_size = board_size as usize * board_size as usize;
         for i in 0..plane_size {

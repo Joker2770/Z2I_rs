@@ -162,6 +162,11 @@ impl CheckResult {
                 && !(r.is_legal(board, last_move))
             {
                 self.chk_rst = (GameStage::End, Color::White);
+            } else {
+                // Legal Renju move (including any White move, which can never be a
+                // forbidden move): the game is still running. Update chk_rst so it
+                // never keeps a stale terminal value from a previous check.
+                self.chk_rst = (GameStage::Running, Color::Blank);
             }
         } else {
             self.chk_rst = (GameStage::Running, Color::Blank);
@@ -648,5 +653,40 @@ mod tests {
             gomoku.get_game_status(),
             &(GameStage::Running, Color::Blank)
         );
+    }
+
+    // --- INFO rule 4: renju (forbidden moves) ---
+
+    /// A legal Renju move must overwrite any stale terminal value left in `chk_rst`
+    /// by a previous check (e.g. an earlier forbidden move). This guards against
+    /// `CheckResult::value` returning a stale result when read directly.
+    #[test]
+    fn renju_legal_move_overwrites_stale_terminal_value() {
+        let mut gomoku = Gomoku::new(15, 5).unwrap();
+        assert!(gomoku.set_rule(RuleFlag::Renju));
+
+        // First: a black overline (six in a row) is a forbidden move -> (End, White).
+        let mut stones: Vec<(u16, Color)> = (0..4).map(|c| (c as u16, Color::White)).collect();
+        stones.extend((4..=9).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        assert!(gomoku.load_position(&stones, Color::White));
+        let rule_flag = gomoku.rule_flag;
+        let board = gomoku.board.clone();
+        let last_move = gomoku.last_move;
+        let result = gomoku
+            .check_result
+            .value(&rule_flag, &board, gomoku.board_size, last_move);
+        assert_eq!(*result, (GameStage::End, Color::White));
+
+        // Second: replace the board with a legal non-winning move (a lone black stone)
+        // without resetting `check_result`, so the stale (End, White) is still present.
+        gomoku.board = vec![vec![Color::Blank; 15]; 15];
+        gomoku.board[7][7] = Color::Black;
+        gomoku.last_move = (7 * 15 + 7) as i16;
+        let board = gomoku.board.clone();
+        let last_move = gomoku.last_move;
+        let result = gomoku
+            .check_result
+            .value(&rule_flag, &board, gomoku.board_size, last_move);
+        assert_eq!(*result, (GameStage::Running, Color::Blank));
     }
 }
