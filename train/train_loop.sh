@@ -29,6 +29,11 @@ MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
 # When using the load-dynamic CUDA onnxruntime on Colab, uncomment and point to libonnxruntime.so
 # export ORT_LIB_LOCATION=/path/to/libonnxruntime.so
+# Evaluation cost knobs, read by train_and_eval (see README "Evaluation cost knobs"):
+#   EVAL_SIMS=<n>     pin simulations per move instead of sims_for_weight (grows to SIMS_CAP)
+#   EVAL_WORKERS=<n>  games to play concurrently (default 2; 1 keeps the board rendering)
+# Both commands log "eval cost: ... games <s> (<s> per pair) ..." to eval_result.log, so a
+# session budget can come from a measured per-pair cost instead of a guess.
 # Run acceptance evaluation every CHECK_FREQ rounds (1 = every round); rounds in between skip
 # evaluation and accept the candidate directly
 # Colab T4 sessions are time-limited; evaluate every other round by default to shorten each round

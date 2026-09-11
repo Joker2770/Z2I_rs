@@ -243,6 +243,28 @@ plays every opening **twice with the colours exchanged**:
   number of independent games. Promotion still uses the existing
   `UPDATE_THRESHOLD` rule on the overall score, so the log reports both.
 
+### Evaluation cost knobs
+
+`eval_with_winner` / `eval_with_random` print and log a cost line, e.g.
+`eval cost: 5 pairs / 10 games, games 337.4s (67.5s per pair), total 351.0s including
+model load, 400 sims/move (EVAL_SIMS), 2 worker(s)`. Use it to budget a session instead
+of guessing:
+
+- `EVAL_SIMS=<n>`: pin the simulations per move. Without it the evaluation follows
+  `sims_for_weight`, which grows to `SIMS_CAP` — a late-generation evaluation then costs
+  up to 3x a generation-0 one for the same games. Both sides always get the same value.
+  Note that the MCTS floor is one batch (`DEFAULT_SIM_PER_BATCH_NUM`), so budgets below
+  that batch size all cost the same.
+- `EVAL_WORKERS=<n>` (default 2): play `n` games concurrently. Workers are independent
+  and each owns its own ONNX sessions, so the merged result does not depend on `n` — it
+  is a pure wall-clock lever. Board rendering is disabled when `n > 1` (interleaved
+  boards are unreadable); set `EVAL_WORKERS=1` to keep them. The gain depends on where
+  the time goes: it overlaps CPU-side search of one game with inference of another, so
+  it helps most when inference runs on a GPU. Measure both settings with the cost line
+  before fixing a value.
+- A failed evaluation (missing or unloadable weight, or a game that could not be played)
+  reports zero games and never promotes the candidate.
+
 Python training scripts are in `train/`; install dependencies with:
 
 ```bash

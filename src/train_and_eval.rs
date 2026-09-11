@@ -25,13 +25,48 @@ use play::SelfPlay;
 use rule::Color;
 
 use std::{
-    cell::RefCell, collections::HashMap, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize,
+    cell::RefCell,
+    collections::HashMap,
+    env, fs,
+    io::Write,
+    path::Path,
+    rc::Rc,
+    sync::atomic::AtomicUsize,
+    time::{Duration, Instant},
 };
 
 pub fn sims_for_weight(weight_id: u16) -> usize {
     let boosted = cfg::DEFAULT_SIMULATION_NUM
         + (weight_id as usize / cfg::SIMS_BOOST_EVERY as usize) * cfg::SIMS_BOOST_STEP;
     boosted.min(cfg::SIMS_CAP)
+}
+
+/// Simulation budget for acceptance evaluation, returned with the source for the log.
+///
+/// `EVAL_SIMS` pins the evaluation to a fixed budget: the generation schedule
+/// (`sims_for_weight`) grows to `SIMS_CAP`, so evaluating a late generation costs up to
+/// three times a generation-0 evaluation for the same number of games. Pinning the
+/// budget keeps an evaluation round inside a short Colab session, and both sides always
+/// get the same value.
+fn eval_sims_for(weight_id: u16) -> (u16, &'static str) {
+    match env::var("EVAL_SIMS")
+        .ok()
+        .as_deref()
+        .and_then(parse_positive::<u16>)
+    {
+        Some(sims) => (sims, "EVAL_SIMS"),
+        None => (sims_for_weight(weight_id) as u16, "generation schedule"),
+    }
+}
+
+/// Parse a positive override value; zero, negative and unparsable values are ignored so
+/// the caller falls back to its default. Shared by `EVAL_SIMS` and `EVAL_WORKERS`.
+fn parse_positive<T>(value: &str) -> Option<T>
+where
+    T: std::str::FromStr + PartialOrd + From<u8>,
+{
+    let parsed = value.trim().parse::<T>().ok()?;
+    (parsed > T::from(0u8)).then_some(parsed)
 }
 
 pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
@@ -121,7 +156,12 @@ struct EvalGame<'a> {
     opening: Option<&'a Opening>,
 }
 
-async fn play_eval_game(setup: EvalGame<'_>) -> (u16, u16, u16) {
+/// Play one game from the scheduled position, returning net A's result counts.
+///
+/// `None` means the game could not be played at all (the position failed to load or was
+/// already decided). That must stay distinct from a played game, otherwise an unusable
+/// opening would silently enter the score as a 0-0 result.
+async fn play_eval_game(setup: EvalGame<'_>) -> Option<(u16, u16, u16)> {
     let EvalGame {
         nn_a,
         nn_b,
@@ -136,9 +176,7 @@ async fn play_eval_game(setup: EvalGame<'_>) -> (u16, u16, u16) {
     let mut b_win = 0;
     let mut draw = 0;
     let mut step = 0u16;
-    let Some(game) = build_eval_position(opening) else {
-        return (0, 0, 0);
-    };
+    let game = build_eval_position(opening)?;
     let g_ref = Rc::new(RefCell::new(game));
 
     let mut game_state = {
@@ -149,7 +187,7 @@ async fn play_eval_game(setup: EvalGame<'_>) -> (u16, u16, u16) {
         // an opening that is already decided would pick the pair winner from the book
         // file instead of from play, so it must never be counted as a game
         eprintln!("Evaluation opening is already terminal, skipping the game");
-        return (0, 0, 0);
+        return None;
     }
 
     let mut ma = MCTS::new(
@@ -220,7 +258,7 @@ async fn play_eval_game(setup: EvalGame<'_>) -> (u16, u16, u16) {
         draw += 1
     }
 
-    (a_win, b_win, draw)
+    Some((a_win, b_win, draw))
 }
 
 /// Outcome of one evaluation: raw game counts plus the score of every complete
@@ -230,6 +268,25 @@ pub struct EvalOutcome {
     pub b_win: u16,
     pub draw: u16,
     pub pair_scores: Vec<f64>,
+    /// Wall-clock spent playing the games, model loading excluded. This is the number
+    /// to budget an evaluation with, together with [`EvalOutcome::seconds_per_pair`].
+    pub elapsed: Duration,
+    /// Whether every scheduled game produced a result. A failed evaluation reports
+    /// zero games and must never be read as a score for net A.
+    pub complete: bool,
+}
+
+impl Default for EvalOutcome {
+    fn default() -> Self {
+        Self {
+            a_win: 0,
+            b_win: 0,
+            draw: 0,
+            pair_scores: Vec::new(),
+            elapsed: Duration::ZERO,
+            complete: false,
+        }
+    }
 }
 
 impl EvalOutcome {
@@ -259,6 +316,16 @@ impl EvalOutcome {
         }
         (wins, losses, ties)
     }
+
+    /// Mean wall-clock seconds per colour-swapped pair: the unit to budget an
+    /// evaluation in. With parallel workers this is the parallel rate, which is what
+    /// matters for planning a Colab session.
+    pub fn seconds_per_pair(&self) -> f64 {
+        if self.pair_scores.is_empty() {
+            return 0.0;
+        }
+        self.elapsed.as_secs_f64() / self.pair_scores.len() as f64
+    }
 }
 
 /// Describe a scheduled opening for the log without dumping the whole book.
@@ -283,67 +350,242 @@ pub fn pair_scores_from_games(game_scores: &[f64]) -> Vec<f64> {
         .collect()
 }
 
+/// One finished game as reported by an evaluation worker.
+struct GameResult {
+    index: usize,
+    a_win: u16,
+    b_win: u16,
+    draw: u16,
+    elapsed: Duration,
+}
+
+/// Load one side's network for a worker; `weight_id < 0` means "no network" (random
+/// playout). Each worker loads its own sessions: an inference session is bound to the
+/// thread that owns it, so sharing one across workers would serialize them.
+fn load_eval_model(
+    weights_dir: &Path,
+    weight_id: i32,
+    intra_thread_num: u8,
+) -> Result<Option<Rc<RefCell<NeuralNetwork>>>, String> {
+    if weight_id < 0 {
+        return Ok(None);
+    }
+    let model_path = weights_dir.join(format!("{weight_id}.onnx"));
+    match NeuralNetwork::new(
+        &model_path,
+        cfg::MAX_BATCH_SIZE as usize,
+        intra_thread_num,
+    ) {
+        Ok(model) => Ok(Some(Rc::new(RefCell::new(model)))),
+        Err(error) => Err(format!(
+            "load weight {weight_id} from {} error: {error}",
+            model_path.display()
+        )),
+    }
+}
+
+/// Play the assigned games inside one worker thread.
+///
+/// Each worker builds its own current-thread runtime and owns its ONNX sessions, so
+/// nothing `Rc`-based crosses a thread boundary. Games are independent, so the merged
+/// result is identical to running them one at a time; only the wall-clock differs.
+#[allow(clippy::too_many_arguments)]
+fn worker_eval_games(
+    worker: usize,
+    weights_dir: &Path,
+    weight_a_id: i32,
+    weight_b_id: i32,
+    assigned: &[(usize, ScheduledGame)],
+    num_mcts_sim_a: u16,
+    num_mcts_sim_b: u16,
+    do_render: bool,
+    intra_thread_num: u8,
+) -> Result<Vec<GameResult>, String> {
+    let model_a = load_eval_model(weights_dir, weight_a_id, intra_thread_num)?;
+    let model_b = load_eval_model(weights_dir, weight_b_id, intra_thread_num)?;
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("create worker runtime error: {error}"))?;
+
+    let mut results = Vec::with_capacity(assigned.len());
+    for (index, scheduled) in assigned {
+        println!(
+            "Eval game {} start... (worker {}, a_first={}, opening: {})",
+            index + 1,
+            worker,
+            scheduled.a_first,
+            describe_opening(scheduled.opening.as_ref())
+        );
+        let started = Instant::now();
+        let played = runtime.block_on(play_eval_game(EvalGame {
+            nn_a: model_a.clone(),
+            nn_b: model_b.clone(),
+            a_first: scheduled.a_first,
+            do_render,
+            num_mcts_sim_a,
+            num_mcts_sim_b,
+            opening: scheduled.opening.as_ref(),
+        }));
+        if let Some((a_win, b_win, draw)) = played {
+            results.push(GameResult {
+                index: *index,
+                a_win,
+                b_win,
+                draw,
+                elapsed: started.elapsed(),
+            });
+        }
+    }
+    Ok(results)
+}
+
+/// How many games to play concurrently (`EVAL_WORKERS`, default 2).
+///
+/// Every worker owns its own inference sessions, so this is a wall-clock lever only:
+/// the games are independent and the merged result is the same for any worker count.
+fn eval_workers() -> usize {
+    env::var("EVAL_WORKERS")
+        .ok()
+        .as_deref()
+        .and_then(parse_positive::<usize>)
+        .unwrap_or(2)
+}
+
+/// Gather the game results reported by the workers, in game order.
+async fn collect_eval_games(
+    weights_dir: &Path,
+    weight_a_id: i32,
+    weight_b_id: i32,
+    games: &[ScheduledGame],
+    num_mcts_sim_a: u16,
+    num_mcts_sim_b: u16,
+    workers: usize,
+) -> Result<Vec<GameResult>, String> {
+    // fair share of the CPU threads when several workers run at once, mirroring the
+    // self-play generator; never below two so a single session is not left single-threaded
+    let intra_thread_num = ((cfg::DEFAULT_INTRA_THREAD_NUM as usize) / workers).max(2) as u8;
+    // interleaved board dumps from concurrent games are unreadable and cost I/O, so
+    // rendering only survives the single-worker path
+    let do_render = cfg::RENDER_AT_EVAL && workers == 1;
+    if cfg::RENDER_AT_EVAL && workers > 1 {
+        println!("Eval: board rendering disabled while running {workers} workers (set EVAL_WORKERS=1 to see the boards)");
+    }
+
+    let mut handles = Vec::with_capacity(workers);
+    for worker in 0..workers {
+        let assigned: Vec<(usize, ScheduledGame)> = games
+            .iter()
+            .cloned()
+            .enumerate()
+            .filter(|(index, _)| index % workers == worker)
+            .collect();
+        if assigned.is_empty() {
+            continue;
+        }
+        let weights_dir = weights_dir.to_path_buf();
+        handles.push(tokio::task::spawn_blocking(move || {
+            worker_eval_games(
+                worker,
+                &weights_dir,
+                weight_a_id,
+                weight_b_id,
+                &assigned,
+                num_mcts_sim_a,
+                num_mcts_sim_b,
+                do_render,
+                intra_thread_num,
+            )
+        }));
+    }
+
+    let mut results = Vec::with_capacity(games.len());
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(mut worker_results)) => results.append(&mut worker_results),
+            Ok(Err(error)) => return Err(error),
+            Err(error) => return Err(format!("evaluation worker panicked: {error}")),
+        }
+    }
+    results.sort_by_key(|result| result.index);
+    Ok(results)
+}
+
+/// Play the scheduled games and fold them into an [`EvalOutcome`].
+///
+/// The games are played by `workers` threads that each own their ONNX sessions; the
+/// results are merged in game order, so the outcome does not depend on the worker count.
 async fn run_eval_games(
-    model_a: Option<Rc<RefCell<NeuralNetwork>>>,
-    model_b: Option<Rc<RefCell<NeuralNetwork>>>,
+    weights_dir: &Path,
+    weight_a_id: i32,
+    weight_b_id: i32,
     games: &[ScheduledGame],
     num_mcts_sim_a: u16,
     num_mcts_sim_b: u16,
 ) -> EvalOutcome {
-    let mut outcome = EvalOutcome {
-        a_win: 0,
-        b_win: 0,
-        draw: 0,
-        pair_scores: Vec::new(),
+    let started = Instant::now();
+    let workers = eval_workers().min(games.len().max(1));
+    let results = match collect_eval_games(
+        weights_dir,
+        weight_a_id,
+        weight_b_id,
+        games,
+        num_mcts_sim_a,
+        num_mcts_sim_b,
+        workers,
+    )
+    .await
+    {
+        Ok(results) => results,
+        Err(error) => {
+            // never report a partial evaluation as a score for net A
+            eprintln!("Evaluation failed, treating it as no result: {error}");
+            return EvalOutcome::default();
+        }
     };
 
-    let a = model_a.clone();
-    let b = model_b.clone();
-    let mut game_scores = Vec::with_capacity(games.len());
-    for (game_index, scheduled) in games.iter().enumerate() {
+    let mut outcome = EvalOutcome {
+        elapsed: started.elapsed(),
+        ..EvalOutcome::default()
+    };
+    let mut game_scores = Vec::with_capacity(results.len());
+    for result in &results {
+        outcome.a_win += result.a_win;
+        outcome.b_win += result.b_win;
+        outcome.draw += result.draw;
+        game_scores.push(f64::from(result.a_win) + cfg::DRAW_SCORE * f64::from(result.draw));
         println!(
-            "Eval game {} start... (a_first={}, opening: {})",
-            game_index + 1,
-            scheduled.a_first,
-            describe_opening(scheduled.opening.as_ref())
+            "Eval game {} end. Current result: a_win={}, b_win={}, draw={} ({:.1}s)",
+            result.index + 1,
+            outcome.a_win,
+            outcome.b_win,
+            outcome.draw,
+            result.elapsed.as_secs_f64()
         );
-        let ma = a.clone();
-        let mb = b.clone();
-
-        let (a_win, b_win, draw) = play_eval_game(EvalGame {
-            nn_a: ma,
-            nn_b: mb,
-            a_first: scheduled.a_first,
-            do_render: cfg::RENDER_AT_EVAL,
-            num_mcts_sim_a,
-            num_mcts_sim_b,
-            opening: scheduled.opening.as_ref(),
-        })
-        .await;
-
-        outcome.a_win += a_win;
-        outcome.b_win += b_win;
-        outcome.draw += draw;
-        game_scores.push(f64::from(a_win) + cfg::DRAW_SCORE * f64::from(draw));
         if game_scores.len().is_multiple_of(2) {
             println!(
-                "Eval pair {} end: a score {:.2} (colour swapped)",
+                "Eval pair {} end: a score {:.2} (colour swapped, {:.1}s so far)",
                 game_scores.len() / 2,
                 pair_scores_from_games(&game_scores)
                     .last()
                     .copied()
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                started.elapsed().as_secs_f64()
             );
         }
-        println!(
-            "Eval game {} end. Current result: a_win={}, b_win={}, draw={}",
-            game_index + 1,
-            outcome.a_win,
-            outcome.b_win,
-            outcome.draw
-        );
     }
     outcome.pair_scores = pair_scores_from_games(&game_scores);
+    // a game that produced no result at all (an unusable opening) leaves the outcome
+    // short of the schedule, which the caller must not read as a score
+    outcome.complete = results.len() == games.len();
+    if !outcome.complete {
+        eprintln!(
+            "Evaluation incomplete: {} of {} games produced a result",
+            results.len(),
+            games.len()
+        );
+    }
 
     outcome
 }
@@ -356,14 +598,8 @@ pub async fn eval(
     num_mcts_sim_b: u16,
     openings: &[Opening],
 ) -> EvalOutcome {
-    let outcome = EvalOutcome {
-        a_win: 0,
-        b_win: 0,
-        draw: 0,
-        pair_scores: Vec::new(),
-    };
     if game_num == 0 {
-        return outcome;
+        return EvalOutcome::default();
     }
     if !openings.is_empty() && !game_num.is_multiple_of(2) {
         // the odd game cannot complete a colour-swapped pair, so it would bias the
@@ -376,30 +612,17 @@ pub async fn eval(
     }
 
     let cur_path = env::current_dir().expect("Unable to get current folder");
-    let load_model = |weight_id: i32| {
-        if weight_id < 0 {
-            None
-        } else {
-            let model_path = cur_path
-                .join("weights")
-                .join(weight_id.to_string() + ".onnx");
-            match NeuralNetwork::new(
-                &model_path,
-                cfg::MAX_BATCH_SIZE as usize,
-                cfg::DEFAULT_INTRA_THREAD_NUM,
-            ) {
-                Ok(model) => Some(model),
-                Err(error) => {
-                    eprintln!("Load model {} error: {}", model_path.display(), error);
-                    None
-                }
-            }
+    let weights_dir = cur_path.join("weights");
+    // preflight on the file rather than on a loaded session: the workers load their own
+    // sessions, and a missing weight must not be reported as a score for net A
+    for weight_id in [weight_a_id, weight_b_id] {
+        if weight_id >= 0 && !weights_dir.join(format!("{weight_id}.onnx")).exists() {
+            eprintln!(
+                "Weight {weight_id}.onnx not found in {}, no evaluation result",
+                weights_dir.display()
+            );
+            return EvalOutcome::default();
         }
-    };
-    let model_a = load_model(weight_a_id).map(|m| Rc::new(RefCell::new(m)));
-    let model_b = load_model(weight_b_id).map(|m| Rc::new(RefCell::new(m)));
-    if weight_a_id >= 0 && model_a.is_none() || weight_b_id >= 0 && model_b.is_none() {
-        return outcome;
     }
 
     let games = schedule(openings, game_num, cfg::BOARD_SIZE);
@@ -409,7 +632,15 @@ pub async fn eval(
         pair_count(games.len()),
         openings.len()
     );
-    run_eval_games(model_a, model_b, &games, num_mcts_sim_a, num_mcts_sim_b).await
+    run_eval_games(
+        &weights_dir,
+        weight_a_id,
+        weight_b_id,
+        &games,
+        num_mcts_sim_a,
+        num_mcts_sim_b,
+    )
+    .await
 }
 
 /// Load the persisted Elo ratings from elo.txt (weight_id -> elo)
@@ -560,7 +791,8 @@ async fn main() {
             );
 
             let game_num: u16 = args[2].parse().expect("Parameter Error!!!");
-            let sims: u16 = sims_for_weight(current_weight.max(0) as u16) as u16;
+            let (sims, sims_source) = eval_sims_for(current_weight.max(0) as u16);
+            println!("Eval sims: {} per move ({})", sims, sims_source);
             let num_mcts_sim_a: u16 = sims;
             let num_mcts_sim_b: u16 = sims;
             let book = load_openings(
@@ -568,6 +800,7 @@ async fn main() {
                 cfg::BOARD_SIZE,
                 cfg::N_IN_ROW,
             );
+            let eval_started = Instant::now();
             let result = eval(
                 current_weight,
                 best_weight,
@@ -577,6 +810,7 @@ async fn main() {
                 &book,
             )
             .await;
+            let eval_wall = eval_started.elapsed();
 
             let mut result_log_info = current_weight.to_string()
                 + "-th weight win: "
@@ -619,7 +853,32 @@ async fn main() {
                     p_value
                 );
             }
-            if win_ratio > cfg::UPDATE_THRESHOLD {
+            // wall-clock accounting: the number to budget a Colab session with. The
+            // per-pair rate is the parallel rate when EVAL_WORKERS > 1.
+            let cost_info = format!(
+                "eval cost: {} pairs / {} games, games {:.1}s ({:.1}s per pair), \
+                 total {:.1}s including model load, {:.0} sims/move ({}), {} worker(s)\n",
+                result.pair_scores.len(),
+                result.a_win + result.b_win + result.draw,
+                result.elapsed.as_secs_f64(),
+                result.seconds_per_pair(),
+                eval_wall.as_secs_f64(),
+                sims,
+                sims_source,
+                eval_workers(),
+            );
+            result_log_info.push_str(&cost_info);
+            println!("{}", cost_info.trim_end());
+
+            if !result.complete || result.a_win + result.b_win + result.draw == 0 {
+                // no usable result: never promote on a failed evaluation
+                result_log_info.push_str("evaluation produced no usable result, candidate rejected\n");
+                fs::write(
+                    "current_and_best_weight.txt",
+                    best_weight.to_string() + " " + &best_weight.to_string(),
+                )
+                .expect("Unable to write file");
+            } else if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
                     + &current_weight.to_string()
@@ -672,9 +931,12 @@ async fn main() {
             }
 
             let game_num: u16 = args[2].parse().expect("Parameter Error!!!");
-            let num_mcts_sim_a: u16 = sims_for_weight(current_weight_id.max(0) as u16) as u16;
+            let (sims, sims_source) = eval_sims_for(current_weight_id.max(0) as u16);
+            println!("Eval sims: {} per move ({})", sims, sims_source);
+            let num_mcts_sim_a: u16 = sims;
             let num_mcts_sim_b: u16 = num_random_mcts_sim as u16;
             // the random opponent is not a weight, so no opening book is meaningful here
+            let eval_started = Instant::now();
             let result = eval(
                 current_weight_id,
                 -1,
@@ -684,6 +946,7 @@ async fn main() {
                 &[],
             )
             .await;
+            let eval_wall = eval_started.elapsed();
 
             let mut result_log_info = current_weight_id.to_string()
                 + "-th weight with mcts ["
@@ -703,7 +966,25 @@ async fn main() {
             let elo_info = update_elo(current_weight_id, -1, &result);
             result_log_info.push_str(&elo_info);
             let win_ratio = result.win_ratio();
-            if win_ratio > cfg::UPDATE_THRESHOLD {
+            // wall-clock accounting, same as eval_with_winner (no pair statistic here:
+            // the random anchor is not a colour-paired weight)
+            let cost_info = format!(
+                "eval cost: {} games, games {:.1}s, total {:.1}s including model load, \
+                 {} sims/move ({}), {} worker(s)\n",
+                result.a_win + result.b_win + result.draw,
+                result.elapsed.as_secs_f64(),
+                eval_wall.as_secs_f64(),
+                sims,
+                sims_source,
+                eval_workers(),
+            );
+            result_log_info.push_str(&cost_info);
+            println!("{}", cost_info.trim_end());
+
+            if !result.complete || result.a_win + result.b_win + result.draw == 0 {
+                result_log_info
+                    .push_str("evaluation produced no usable result, candidate rejected\n");
+            } else if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
                     + &current_weight_id.to_string()
@@ -809,16 +1090,23 @@ mod tests {
             b_win: 1,
             draw: 0,
             pair_scores: vec![1.0, 0.5, 0.25, 0.0],
+            ..EvalOutcome::default()
         };
         assert!((outcome.win_ratio() - 0.75).abs() < 1e-12);
         // 1.0 counts as a pair win, 0.0 as a loss, 0.5 as a tie; 0.25 is a loss
         assert_eq!(outcome.pair_decisions(), (1, 2, 1));
+        // a failed evaluation reports zero games and must never look like a score
+        let failed = EvalOutcome::default();
+        assert_eq!(failed.win_ratio(), 0.0);
+        assert!(!failed.complete);
+        assert_eq!(failed.seconds_per_pair(), 0.0);
 
         let empty = EvalOutcome {
             a_win: 0,
             b_win: 0,
             draw: 0,
             pair_scores: Vec::new(),
+            ..EvalOutcome::default()
         };
         assert_eq!(empty.win_ratio(), 0.0);
         assert_eq!(empty.pair_decisions(), (0, 0, 0));
@@ -828,9 +1116,36 @@ mod tests {
             b_win: 0,
             draw: 4,
             pair_scores: vec![0.5, 0.5],
+            ..EvalOutcome::default()
         };
         assert!((all_draws.win_ratio() - 0.5).abs() < 1e-12);
         assert_eq!(all_draws.pair_decisions(), (0, 0, 2));
+    }
+
+    #[test]
+    fn eval_cost_reports_seconds_per_pair() {
+        let outcome = EvalOutcome {
+            a_win: 2,
+            b_win: 2,
+            draw: 0,
+            pair_scores: vec![0.5, 0.5],
+            elapsed: Duration::from_secs_f64(120.0),
+            complete: true,
+        };
+        // the unit to budget an evaluation in: wall-clock per colour-swapped pair
+        assert!((outcome.seconds_per_pair() - 60.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn positive_overrides_ignore_zero_and_garbage() {
+        assert_eq!(parse_positive::<u16>("400"), Some(400));
+        assert_eq!(parse_positive::<u16>("  384 "), Some(384));
+        assert_eq!(parse_positive::<u16>("0"), None);
+        assert_eq!(parse_positive::<u16>("-5"), None);
+        assert_eq!(parse_positive::<u16>(""), None);
+        assert_eq!(parse_positive::<u16>("many"), None);
+        assert_eq!(parse_positive::<usize>("2"), Some(2));
+        assert_eq!(parse_positive::<usize>("0"), None);
     }
 
     #[test]
@@ -857,21 +1172,18 @@ mod tests {
     #[tokio::test]
     #[ignore = "needs a matching local ONNX weight and a few seconds per game"]
     async fn paired_schedule_runs_with_a_real_model() {
-        let model_path = std::path::Path::new("build/weights/1205.onnx");
-        if !model_path.exists() {
-            eprintln!("skipping: {} not found", model_path.display());
+        let weights_dir = Path::new("build/weights");
+        if !weights_dir.join("1205.onnx").exists() {
+            eprintln!("skipping: {}/1205.onnx not found", weights_dir.display());
             return;
         }
-        let load = || {
-            NeuralNetwork::new(model_path, 16, 2)
-                .ok()
-                .map(|model| Rc::new(RefCell::new(model)))
-        };
         let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
         let games = schedule(&book, 2, cfg::BOARD_SIZE);
-        // one batch is the floor, so a small budget still exercises the search
-        let outcome = run_eval_games(load(), load(), &games, 4, 4).await;
+        // one batch is the floor, so a small budget still exercises the search; the
+        // workers load their own sessions, which is what the parallel path relies on
+        let outcome = run_eval_games(weights_dir, 1205, 1205, &games, 4, 4).await;
 
+        assert!(outcome.complete, "both games of the pair must produce a result");
         assert_eq!(
             outcome.a_win + outcome.b_win + outcome.draw,
             2,
@@ -887,8 +1199,14 @@ mod tests {
             outcome.pair_scores[0]
         );
         println!(
-            "real-model pair: a_win={}, b_win={}, draw={}, pair score {:.2}",
-            outcome.a_win, outcome.b_win, outcome.draw, outcome.pair_scores[0]
+            "real-model pair: a_win={}, b_win={}, draw={}, pair score {:.2}, \
+             {:.1}s with {} worker(s)",
+            outcome.a_win,
+            outcome.b_win,
+            outcome.draw,
+            outcome.pair_scores[0],
+            outcome.elapsed.as_secs_f64(),
+            eval_workers()
         );
     }
 
@@ -928,7 +1246,8 @@ mod tests {
             num_mcts_sim_b: 1,
             opening: Some(&opening),
         })
-        .await;
+        .await
+        .expect("a book opening must be playable");
 
         assert_eq!(
             result.0 + result.1 + result.2,
