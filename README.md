@@ -140,7 +140,7 @@ TURN 7,7
 END
 ```
 
-Normally `START` replies `OK`, and `BEGIN`/`TURN` reply a move coordinate in `x,y` format.
+Normally `START` replies `OK`, and `BEGIN`/`TURN` reply a move coordinate in `x,y` format. Commands that ask for a move but cannot be served are answered with an `ERROR <reason>` line on stdout, so a manager waiting for a reply never hangs. Besides responses, stdout can carry `MESSAGE`/`ERROR`/`DEBUG` lines that are not tied to a request; a manager should skip lines it does not understand.
 
 ## Supported protocol commands
 
@@ -190,15 +190,17 @@ BEGIN
 Behavior:
 
 - `INFO rule 2` enables the mode; the other bits still select the win rule, so `INFO rule 2` alone keeps FreeStyle, and `INFO rule 10` selects Caro *and* continuous game. An `INFO rule` value without bit 2 turns the mode off again.
-- `BEGIN` opens the move stream; the engine replies with the first coordinate and then keeps playing both colors until the game is over. While the stream runs, each reply is one `x,y` line on stdout, and `MESSAGE continuous game finished` is written to stderr when the game ends.
-- After the game is over the engine waits. A new `START` starts a new game and the stream resumes without another `BEGIN`; send `BEGIN` anyway if you prefer, it is simply ignored while no continuous game is in progress.
-- `TURN` is ignored during the mode (the engine has no opponent), and pondering is disabled because the engine is always the side to move.
+- `BEGIN` opens the move stream; the engine replies with the first coordinate and then keeps playing both colors until the game is over. While the stream runs, each reply is one `x,y` line on stdout, and `MESSAGE continuous game finished` is written to stdout when the game ends.
+- After the game is over the engine waits. A new `START` starts a new game and the stream resumes without another `BEGIN`; a `BEGIN` sent while no continuous game is in progress is refused with `ERROR cannot begin: no continuous game in progress` on stdout.
+- `TURN` is ignored during the mode (the engine has no opponent), and pondering is disabled because the engine is always the side to move. The refusal is reported as `ERROR TURN ignored during continuous game` on stdout, so a manager that sent `TURN` gets an answer instead of waiting forever.
 - Because no manager refreshes the clock per move, the engine deducts its own thinking time from the last `INFO time_left` value; `INFO timeout_turn` still caps each move. An `INFO time_left` announcement received before a move is authoritative and skips that deduction for that move, so a manager that refreshes the clock before every move and one that never refreshes it both get correct accounting.
 - Announcements are handled in command order, so a manager that reacts to a reported move reaches the engine while the *next* move is already being searched: the update applies from the move after that one. The engine never waits for an announcement, and the manager's value always replaces the locally deducted clock.
 - In `TURN`-driven mode the engine never deducts locally: the `INFO time_left` a manager sends before each move is used as-is, so every move gets the announced budget.
-- stdout carries only the move coordinates (plus `OK` for `START` and optional `DEBUG thinking ...` lines when `open_mind` is enabled in the configuration); all status messages go to stderr.
+- stdout carries everything a manager has to react to: the move coordinates, `OK` for a successful `START`, `ERROR <reason>` when a command that expects a move cannot be served (`START` with an unsupported size, a `BEGIN` that cannot open the game, an unplayable `TURN` or `BOARD` position, a `TURN` ignored during a continuous game), `MESSAGE continuous game finished` when the self-play stream reaches the end of the game, `ERROR continuous game stopped` when the engine cannot continue it, and optional `DEBUG thinking ...` lines when `open_mind` is enabled in the configuration. stderr carries only diagnostics such as the configuration and model loading messages.
 
 Note that spontaneous multi-line output is outside the strict request/response pattern of the piskvork protocol, so a stock manager such as qpiskvork will lose sync. Use this mode with a manager built for it.
+
+An `INFO rule` value carrying bit 2 switches the mode on immediately, even in the middle of an ordinary game that already has stones on the board. Such a manager then gets `ERROR TURN ignored during continuous game` for the very next `TURN` instead of a move. Send `INFO rule` without bit 2 (for example `INFO rule 1`) to hand the game back to `TURN` control; the win rule itself still changes only from the next `START`.
 
 ## Training & evaluation
 

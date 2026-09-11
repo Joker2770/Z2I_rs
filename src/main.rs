@@ -772,10 +772,13 @@ async fn run_protocol() {
                                     output_move(action, board_size(game));
                                 }
                                 if !brain.should_self_play() {
-                                    eprintln!("MESSAGE continuous game finished");
+                                    // the stream is the manager's only output channel, so the
+                                    // end of the game has to be visible on it
+                                    println!("MESSAGE continuous game finished");
                                 }
                             } else {
-                                eprintln!("ERROR continuous game stopped");
+                                // ditto for a stream that could not be continued
+                                println!("ERROR continuous game stopped");
                             }
                         } else if brain.should_ponder() {
                             brain.ponder_batch().await;
@@ -807,10 +810,10 @@ async fn run_protocol() {
                         let size = board_size(brain.game.as_ref().unwrap());
                         output_move(action, size);
                     } else {
-                        eprintln!("ERROR cannot play board position");
+                        println!("ERROR cannot play board position");
                     }
                 } else {
-                    eprintln!("ERROR invalid board");
+                    println!("ERROR invalid board");
                 }
             } else if let Some((coords, color)) = command.rsplit_once(',')
                 && let (Some((x, y)), Ok(color)) =
@@ -832,7 +835,8 @@ async fn run_protocol() {
                 if size.is_some_and(|size| brain.start(size)) {
                     println!("OK");
                 } else {
-                    eprintln!("ERROR unsupported board size");
+                    // a failed request still owes the manager an answer on the protocol stream
+                    println!("ERROR unsupported board size");
                 }
             }
             "BEGIN" => {
@@ -841,16 +845,18 @@ async fn run_protocol() {
                 } else if brain.self_play {
                     // a continuous game is not in progress (no game, or this game is over);
                     // the stream keeps going by itself after the next START
-                    eprintln!("MESSAGE BEGIN ignored: no continuous game in progress");
+                    println!("ERROR cannot begin: no continuous game in progress");
                 } else {
-                    eprintln!("ERROR cannot begin");
+                    println!("ERROR cannot begin");
                 }
             }
             "TURN" => {
                 // A continuous game has no opponent to wait for: the engine generates both
                 // sides itself, so a manager-supplied move would desynchronize the board.
                 if brain.self_play {
-                    eprintln!("MESSAGE TURN ignored during continuous game");
+                    // `TURN` expects a reply, so refuse on stdout instead of leaving it waiting
+                    println!("ERROR TURN ignored during continuous game");
+                    let _ = io::stdout().flush();
                     continue;
                 }
                 let action = fields
@@ -866,10 +872,10 @@ async fn run_protocol() {
                     if let Some(response) = brain.turn(action).await {
                         output_move(response, board_size(brain.game.as_ref().unwrap()));
                     } else {
-                        eprintln!("ERROR no response");
+                        println!("ERROR no response");
                     }
                 } else {
-                    eprintln!("ERROR invalid turn");
+                    println!("ERROR invalid turn");
                 }
             }
             "BOARD" => board_lines = Some(Vec::new()),
