@@ -261,8 +261,8 @@ impl SelfPlay {
 #[cfg(test)]
 mod tests {
 
-    use crate::play;
     use super::cfg;
+    use crate::play;
 
     use rand_distr::{Distribution, multi::Dirichlet};
 

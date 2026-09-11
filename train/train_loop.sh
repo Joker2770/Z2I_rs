@@ -20,6 +20,9 @@ set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-build}"
 BIN="${BIN:-./train_and_eval}"
+# acceptance evaluation game count; an even value completes the colour-swapped
+# opening pairs of openings.txt (odd values still count the last game, but leave it
+# out of the per-pair sign test)
 NUM_CONTEST="${NUM_CONTEST:-10}"
 BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"

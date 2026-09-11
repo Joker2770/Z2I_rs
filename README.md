@@ -215,10 +215,33 @@ cargo run --release --bin train_and_eval -- eval_with_random 10
 
 Command descriptions:
 
-- `prepare`: create `data/`, `weights/` and the weight state file.
+- `prepare`: create `data/`, `weights/`, the weight state file and a default `openings.txt`.
 - `generate <batch_id>`: load the current weight and generate self-play training data.
 - `eval_with_winner <games>`: evaluate the current weight against the best weight.
 - `eval_with_random <games>`: evaluate the current weight against a random MCTS opponent without a neural network.
+
+### Colour-paired evaluations
+
+Acceptance evaluation always gives Black the first move, so a rule can be colour
+symmetric and still not be colour symmetric *as a sampled distribution*: the reachable
+positions are only closed under a colour swap inside the mirror universe where White
+moves first. `eval_with_winner` therefore starts its games from an opening book and
+plays every opening **twice with the colours exchanged**:
+
+- `openings.txt` in the training work dir holds one opening per line: comma or
+  whitespace separated board indices (`row * board_size + col`), colours alternating
+  Black, White, ... so the count must be even. `#` starts a comment and unusable lines
+  are reported and skipped.
+- The even ply count is what makes the colour-swapped twin a legal "Black to move"
+  position, so the first-move advantage cancels *inside* a pair and the pair score is a
+  fair strength estimate. A file with no usable opening falls back to the built-in book.
+- The book is spread over the eight board symmetries, so a small book still yields many
+  distinct pairs. Odd `games` values leave the last game unpaired: it still counts in the
+  win rate but is excluded from the pair statistic.
+- Each evaluation logs the per-pair scores plus a two-sided exact sign test over the
+  decisive pairs, which is a much sharper statement than the raw win rate over the same
+  number of independent games. Promotion still uses the existing
+  `UPDATE_THRESHOLD` rule on the overall score, so the log reports both.
 
 Python training scripts are in `train/`; install dependencies with:
 

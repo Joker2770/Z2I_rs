@@ -8,6 +8,7 @@ mod configuration;
 mod free_style;
 mod gomoku;
 mod mcts;
+mod openings;
 mod ortcommon;
 mod ortopt;
 mod play;
@@ -18,6 +19,7 @@ mod standard;
 use configuration::cfg;
 use gomoku::{GameStage, Gomoku};
 use mcts::MCTS;
+use openings::{Opening, ScheduledGame, load_openings, pair_count, schedule, sign_test_p_value};
 use ortopt::NeuralNetwork;
 use play::SelfPlay;
 use rule::Color;
@@ -91,130 +93,259 @@ pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
     }
 }
 
-pub async fn play_for_eval(
+/// Build the starting position of one evaluation game.
+///
+/// The opening is injected before the MCTS instances are created, so both searches
+/// start from the book position. With `opening == None` this is exactly the legacy
+/// empty-board position.
+pub fn build_eval_position(opening: Option<&Opening>) -> Option<Gomoku> {
+    let mut game = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW)?;
+    if let Some(opening) = opening
+        && !game.load_position(opening.stones(), Color::Black)
+    {
+        eprintln!("Failed to load opening {:?}", opening.stones());
+        return None;
+    }
+    Some(game)
+}
+
+/// Everything one evaluation game needs, grouped so the call site stays readable
+/// now that the opening book is part of the setup.
+struct EvalGame<'a> {
     nn_a: Option<Rc<RefCell<NeuralNetwork>>>,
     nn_b: Option<Rc<RefCell<NeuralNetwork>>>,
     a_first: bool,
     do_render: bool,
     num_mcts_sim_a: u16,
     num_mcts_sim_b: u16,
-) -> (u16, u16, u16) {
+    opening: Option<&'a Opening>,
+}
+
+async fn play_eval_game(setup: EvalGame<'_>) -> (u16, u16, u16) {
+    let EvalGame {
+        nn_a,
+        nn_b,
+        a_first,
+        do_render,
+        num_mcts_sim_a,
+        num_mcts_sim_b,
+        opening,
+    } = setup;
+
     let mut a_win = 0;
     let mut b_win = 0;
     let mut draw = 0;
-    let mut step = 0;
-    let gomoku = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW);
-    if let Some(g) = gomoku {
-        let g_ref = Rc::new(RefCell::new(g));
-        let mut game_state = {
+    let mut step = 0u16;
+    let Some(game) = build_eval_position(opening) else {
+        return (0, 0, 0);
+    };
+    let g_ref = Rc::new(RefCell::new(game));
+
+    let mut game_state = {
+        let mut game = g_ref.borrow_mut();
+        *game.get_game_status()
+    };
+    if game_state.0 != GameStage::Running {
+        // an opening that is already decided would pick the pair winner from the book
+        // file instead of from play, so it must never be counted as a game
+        eprintln!("Evaluation opening is already terminal, skipping the game");
+        return (0, 0, 0);
+    }
+
+    let mut ma = MCTS::new(
+        nn_a,
+        cfg::C_PUCT as f64,
+        cfg::C_VIRTUAL_LOSS,
+        AtomicUsize::new(num_mcts_sim_a as usize),
+        cfg::DEFAULT_SIM_PER_BATCH_NUM,
+        g_ref.borrow().get_action_size(),
+    );
+    let mut mb = MCTS::new(
+        nn_b,
+        cfg::C_PUCT as f64,
+        cfg::C_VIRTUAL_LOSS,
+        AtomicUsize::new(num_mcts_sim_b as usize),
+        cfg::DEFAULT_SIM_PER_BATCH_NUM,
+        g_ref.borrow().get_action_size(),
+    );
+
+    while game_state.0 == GameStage::Running {
+        // a book opening always has an even ply count, so the side to move at step 0
+        // is Black and the plain step parity below still identifies the colours
+        let is_a_turn = if a_first {
+            step % 2 == 0
+        } else {
+            step % 2 != 0
+        };
+        let best_action = if is_a_turn {
+            ma.get_best_action(&g_ref.borrow()).await
+        } else {
+            mb.get_best_action(&g_ref.borrow()).await
+        };
+        let is_update_succeed_a = ma.update_root_with_action(&g_ref.borrow(), best_action);
+        let is_update_succeed_b = mb.update_root_with_action(&g_ref.borrow(), best_action);
+        if is_update_succeed_a && is_update_succeed_b {
+            g_ref.borrow_mut().execute_move(best_action);
+        } else {
+            eprintln!("May be wrong with MCTS!!!");
+        }
+
+        if do_render {
+            println!("step: {}", step);
+            g_ref.borrow().render();
+            println!();
+        }
+        game_state = {
             let mut game = g_ref.borrow_mut();
             *game.get_game_status()
         };
-        let mut ma = MCTS::new(
-            nn_a,
-            cfg::C_PUCT as f64,
-            cfg::C_VIRTUAL_LOSS,
-            AtomicUsize::new(num_mcts_sim_a as usize),
-            cfg::DEFAULT_SIM_PER_BATCH_NUM,
-            g_ref.borrow().get_action_size(),
-        );
-        let mut mb = MCTS::new(
-            nn_b,
-            cfg::C_PUCT as f64,
-            cfg::C_VIRTUAL_LOSS,
-            AtomicUsize::new(num_mcts_sim_b as usize),
-            cfg::DEFAULT_SIM_PER_BATCH_NUM,
-            g_ref.borrow().get_action_size(),
-        );
 
-        while game_state.0 == GameStage::Running {
-            let is_a_turn = if a_first {
-                step % 2 == 0
-            } else {
-                step % 2 != 0
-            };
-            let best_action = if is_a_turn {
-                ma.get_best_action(&g_ref.borrow()).await
-            } else {
-                mb.get_best_action(&g_ref.borrow()).await
-            };
-            let is_update_succeed_a = ma.update_root_with_action(&g_ref.borrow(), best_action);
-            let is_update_succeed_b = mb.update_root_with_action(&g_ref.borrow(), best_action);
-            if is_update_succeed_a && is_update_succeed_b {
-                g_ref.borrow_mut().execute_move(best_action);
-            } else {
-                eprintln!("May be wrong with MCTS!!!");
-            }
+        step += 1;
+    }
+    println!(
+        "eval: total step num = {} (opening ply {})",
+        step,
+        opening.map_or(0, Opening::plies)
+    );
 
-            if do_render {
-                println!("step: {}", step);
-                g_ref.borrow().render();
-                println!();
-            }
-            game_state = {
-                let mut game = g_ref.borrow_mut();
-                *game.get_game_status()
-            };
-
-            step += 1;
-        }
-        println!("eval: total step num = {}", step);
-
-        if (game_state.1 == Color::Black && a_first) || (game_state.1 == Color::White && !a_first) {
-            println!("winner = a");
-            a_win += 1;
-        } else if (game_state.1 == Color::Black && !a_first)
-            || (game_state.1 == Color::White && a_first)
-        {
-            println!("winner = b");
-            b_win += 1;
-        } else {
-            draw += 1
-        }
+    if (game_state.1 == Color::Black && a_first) || (game_state.1 == Color::White && !a_first) {
+        println!("winner = a");
+        a_win += 1;
+    } else if (game_state.1 == Color::Black && !a_first)
+        || (game_state.1 == Color::White && a_first)
+    {
+        println!("winner = b");
+        b_win += 1;
+    } else {
+        draw += 1
     }
 
     (a_win, b_win, draw)
 }
 
+/// Outcome of one evaluation: raw game counts plus the score of every complete
+/// colour-swapped pair (0 = A lost both, 0.5 = even, 1 = A won both).
+pub struct EvalOutcome {
+    pub a_win: u16,
+    pub b_win: u16,
+    pub draw: u16,
+    pub pair_scores: Vec<f64>,
+}
+
+impl EvalOutcome {
+    /// Score of net A with draws counted as `DRAW_SCORE` (0 when no game was played).
+    pub fn win_ratio(&self) -> f64 {
+        let total = self.a_win + self.b_win + self.draw;
+        if total == 0 {
+            return 0.0;
+        }
+        (f64::from(self.a_win) + cfg::DRAW_SCORE * f64::from(self.draw)) / f64::from(total)
+    }
+
+    /// Pair decisions for the sign test: wins, losses and ties (pairs scoring exactly
+    /// 0.5, which carry no information about which side is stronger).
+    pub fn pair_decisions(&self) -> (u32, u32, u32) {
+        let mut wins = 0;
+        let mut losses = 0;
+        let mut ties = 0;
+        for score in &self.pair_scores {
+            if *score > 0.5 {
+                wins += 1;
+            } else if *score < 0.5 {
+                losses += 1;
+            } else {
+                ties += 1;
+            }
+        }
+        (wins, losses, ties)
+    }
+}
+
+/// Describe a scheduled opening for the log without dumping the whole book.
+fn describe_opening(opening: Option<&Opening>) -> String {
+    match opening {
+        None => "empty board".to_string(),
+        Some(opening) => format!("book, {} ply", opening.plies()),
+    }
+}
+
+/// Fold the per-game score of net A into colour-swapped pair scores.
+///
+/// A pair is one opening played with each colour, so the first-move advantage cancels
+/// inside it and the pair score is the pair's fair estimate of strength. A trailing
+/// game without a partner is dropped: it has nothing to cancel against.
+pub fn pair_scores_from_games(game_scores: &[f64]) -> Vec<f64> {
+    game_scores
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| (pair[0] + pair[1]) / 2.0)
+        .collect()
+}
+
 async fn run_eval_games(
     model_a: Option<Rc<RefCell<NeuralNetwork>>>,
     model_b: Option<Rc<RefCell<NeuralNetwork>>>,
-    game_num: u16,
+    games: &[ScheduledGame],
     num_mcts_sim_a: u16,
     num_mcts_sim_b: u16,
-) -> (u16, u16, u16) {
-    let mut result = (0, 0, 0);
+) -> EvalOutcome {
+    let mut outcome = EvalOutcome {
+        a_win: 0,
+        b_win: 0,
+        draw: 0,
+        pair_scores: Vec::new(),
+    };
 
     let a = model_a.clone();
     let b = model_b.clone();
-    for game_index in 0..game_num {
-        println!("Eval game {} start...", game_index + 1);
+    let mut game_scores = Vec::with_capacity(games.len());
+    for (game_index, scheduled) in games.iter().enumerate() {
+        println!(
+            "Eval game {} start... (a_first={}, opening: {})",
+            game_index + 1,
+            scheduled.a_first,
+            describe_opening(scheduled.opening.as_ref())
+        );
         let ma = a.clone();
         let mb = b.clone();
 
-        let (a_win, b_win, draw) = play_for_eval(
-            ma,
-            mb,
-            game_index % 2 == 0,
-            cfg::RENDER_AT_EVAL,
+        let (a_win, b_win, draw) = play_eval_game(EvalGame {
+            nn_a: ma,
+            nn_b: mb,
+            a_first: scheduled.a_first,
+            do_render: cfg::RENDER_AT_EVAL,
             num_mcts_sim_a,
             num_mcts_sim_b,
-        )
+            opening: scheduled.opening.as_ref(),
+        })
         .await;
 
-        result.0 += a_win;
-        result.1 += b_win;
-        result.2 += draw;
+        outcome.a_win += a_win;
+        outcome.b_win += b_win;
+        outcome.draw += draw;
+        game_scores.push(f64::from(a_win) + cfg::DRAW_SCORE * f64::from(draw));
+        if game_scores.len().is_multiple_of(2) {
+            println!(
+                "Eval pair {} end: a score {:.2} (colour swapped)",
+                game_scores.len() / 2,
+                pair_scores_from_games(&game_scores)
+                    .last()
+                    .copied()
+                    .unwrap_or_default()
+            );
+        }
         println!(
             "Eval game {} end. Current result: a_win={}, b_win={}, draw={}",
             game_index + 1,
-            result.0,
-            result.1,
-            result.2
+            outcome.a_win,
+            outcome.b_win,
+            outcome.draw
         );
     }
+    outcome.pair_scores = pair_scores_from_games(&game_scores);
 
-    result
+    outcome
 }
 
 pub async fn eval(
@@ -223,9 +354,25 @@ pub async fn eval(
     game_num: u16,
     num_mcts_sim_a: u16,
     num_mcts_sim_b: u16,
-) -> (u16, u16, u16) {
+    openings: &[Opening],
+) -> EvalOutcome {
+    let outcome = EvalOutcome {
+        a_win: 0,
+        b_win: 0,
+        draw: 0,
+        pair_scores: Vec::new(),
+    };
     if game_num == 0 {
-        return (0, 0, 0);
+        return outcome;
+    }
+    if !openings.is_empty() && !game_num.is_multiple_of(2) {
+        // the odd game cannot complete a colour-swapped pair, so it would bias the
+        // per-pair statistic: report it and leave it to the game count only
+        println!(
+            "Eval: game_num {} is odd, the last game does not complete a pair \
+             (use an even NUM_CONTEST for the pair statistic)",
+            game_num
+        );
     }
 
     let cur_path = env::current_dir().expect("Unable to get current folder");
@@ -252,10 +399,17 @@ pub async fn eval(
     let model_a = load_model(weight_a_id).map(|m| Rc::new(RefCell::new(m)));
     let model_b = load_model(weight_b_id).map(|m| Rc::new(RefCell::new(m)));
     if weight_a_id >= 0 && model_a.is_none() || weight_b_id >= 0 && model_b.is_none() {
-        return (0, 0, 0);
+        return outcome;
     }
 
-    run_eval_games(model_a, model_b, game_num, num_mcts_sim_a, num_mcts_sim_b).await
+    let games = schedule(openings, game_num, cfg::BOARD_SIZE);
+    println!(
+        "Eval: {} games, {} colour-swapped pairs, {} opening(s) in the book",
+        games.len(),
+        pair_count(games.len()),
+        openings.len()
+    );
+    run_eval_games(model_a, model_b, &games, num_mcts_sim_a, num_mcts_sim_b).await
 }
 
 /// Load the persisted Elo ratings from elo.txt (weight_id -> elo)
@@ -305,13 +459,13 @@ fn inherit_elo(new_weight: i32, parent_weight: i32) {
 }
 
 /// Update both sides' Elo from one evaluation match result, returning a log description
-fn update_elo(weight_a: i32, weight_b: i32, result: (u16, u16, u16)) -> String {
-    let total = result.0 + result.1 + result.2;
+fn update_elo(weight_a: i32, weight_b: i32, outcome: &EvalOutcome) -> String {
+    let total = outcome.a_win + outcome.b_win + outcome.draw;
     if total == 0 {
         return String::new();
     }
     // score rate of a: 1 point per win, DRAW_SCORE per draw
-    let score_a = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64) / total as f64;
+    let score_a = outcome.win_ratio();
 
     let mut ratings = load_elo();
     let rating_a = ratings.get(&weight_a).copied().unwrap_or(cfg::ELO_INITIAL);
@@ -351,6 +505,15 @@ async fn main() {
 
         let mut f_2 = fs::File::create("random_mcts_number.txt").expect("Unable to create file");
         _ = f_2.write_all(cfg::DEFAULT_SIMULATION_NUM.to_string().as_bytes());
+
+        // seed the colour-paired opening book so the file documents itself; an
+        // existing book is never overwritten, and a missing one falls back to the
+        // built-in book at evaluation time
+        if !std::path::Path::new(openings::OPENING_FILE).exists() {
+            let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
+            _ = fs::write(openings::OPENING_FILE, openings::format_book(&book));
+            println!("Wrote {} with {} opening(s).", openings::OPENING_FILE, book.len());
+        }
         println!("Next: Generate initial weight by python.");
     } else if args[1] == "generate" && args.len() == 3 {
         let start_batch_id: u16 = args[2].parse().expect("Parameter Error!!!");
@@ -400,32 +563,62 @@ async fn main() {
             let sims: u16 = sims_for_weight(current_weight.max(0) as u16) as u16;
             let num_mcts_sim_a: u16 = sims;
             let num_mcts_sim_b: u16 = sims;
+            let book = load_openings(
+                std::path::Path::new(openings::OPENING_FILE),
+                cfg::BOARD_SIZE,
+                cfg::N_IN_ROW,
+            );
             let result = eval(
                 current_weight,
                 best_weight,
                 game_num,
                 num_mcts_sim_a,
                 num_mcts_sim_b,
+                &book,
             )
             .await;
 
             let mut result_log_info = current_weight.to_string()
                 + "-th weight win: "
-                + &result.0.to_string()
+                + &result.a_win.to_string()
                 + " "
                 + &best_weight.to_string()
                 + "-th weight win: "
-                + &result.1.to_string()
+                + &result.b_win.to_string()
                 + " tie:"
-                + &result.2.to_string()
+                + &result.draw.to_string()
                 + "\n";
             // the candidate inherits best's rating as its starting point, so lineage ratings
             // accumulate monotonically across iterations
             inherit_elo(current_weight, best_weight);
-            let elo_info = update_elo(current_weight, best_weight, result);
+            let elo_info = update_elo(current_weight, best_weight, &result);
             result_log_info.push_str(&elo_info);
-            let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
-                / (result.0 + result.1 + result.2) as f64;
+            let win_ratio = result.win_ratio();
+            // Paired, colour-swapped openings: the first-move advantage cancels inside
+            // each pair, so a sign test over pair scores is a much sharper statement
+            // than the raw win rate over the same number of independent games.
+            let (pair_wins, pair_losses, pair_ties) = result.pair_decisions();
+            if !result.pair_scores.is_empty() {
+                let p_value = sign_test_p_value(pair_wins, pair_wins + pair_losses);
+                result_log_info.push_str(&format!(
+                    "paired openings: {} pairs ({} W / {} L / {} D), sign test p = {:.4} \
+                     over {} decisive pair(s)\n",
+                    result.pair_scores.len(),
+                    pair_wins,
+                    pair_losses,
+                    pair_ties,
+                    p_value,
+                    pair_wins + pair_losses
+                ));
+                println!(
+                    "Paired openings: {} pairs ({} W / {} L / {} D), sign test p = {:.4}",
+                    result.pair_scores.len(),
+                    pair_wins,
+                    pair_losses,
+                    pair_ties,
+                    p_value
+                );
+            }
             if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
@@ -481,12 +674,14 @@ async fn main() {
             let game_num: u16 = args[2].parse().expect("Parameter Error!!!");
             let num_mcts_sim_a: u16 = sims_for_weight(current_weight_id.max(0) as u16) as u16;
             let num_mcts_sim_b: u16 = num_random_mcts_sim as u16;
+            // the random opponent is not a weight, so no opening book is meaningful here
             let result = eval(
                 current_weight_id,
                 -1,
                 game_num,
                 num_mcts_sim_a,
                 num_mcts_sim_b,
+                &[],
             )
             .await;
 
@@ -494,21 +689,20 @@ async fn main() {
                 + "-th weight with mcts ["
                 + &num_mcts_sim_a.to_string()
                 + "] win: "
-                + &result.0.to_string()
+                + &result.a_win.to_string()
                 + " Random with mcts ["
                 + &num_mcts_sim_b.to_string()
                 + "] win: "
-                + &result.1.to_string()
+                + &result.b_win.to_string()
                 + " tie: "
-                + &result.2.to_string()
+                + &result.draw.to_string()
                 + "\n";
             // the candidate likewise inherits best's rating, keeping the same rating scale as
             // eval_with_winner; the random baseline (-1) drifts naturally as a fixed-strength anchor
             inherit_elo(current_weight_id, best_weight_id);
-            let elo_info = update_elo(current_weight_id, -1, result);
+            let elo_info = update_elo(current_weight_id, -1, &result);
             result_log_info.push_str(&elo_info);
-            let win_ratio = (result.0 as f64 + cfg::DRAW_SCORE * result.2 as f64)
-                / (result.0 + result.1 + result.2) as f64;
+            let win_ratio = result.win_ratio();
             if win_ratio > cfg::UPDATE_THRESHOLD {
                 result_log_info = result_log_info
                     + "new best weight: "
@@ -533,5 +727,213 @@ async fn main() {
         }
     } else {
         println!("Hello, world!");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Board points currently occupied, in `(index, color)` form.
+    fn occupied(game: &Gomoku) -> Vec<(u16, Color)> {
+        let mut stones = Vec::new();
+        for row in 0..game.get_board_size() {
+            for col in 0..game.get_board_size() {
+                let color = game.get_board()[row as usize][col as usize];
+                if color != Color::Blank {
+                    stones.push((
+                        u16::from(row) * u16::from(game.get_board_size()) + u16::from(col),
+                        color,
+                    ));
+                }
+            }
+        }
+        stones
+    }
+
+    #[test]
+    fn empty_board_position_is_unchanged() {
+        let mut game = build_eval_position(None).expect("the default board must build");
+        assert_eq!(game.get_last_move(), -1);
+        assert_eq!(*game.get_cur_color(), Color::Black);
+        assert!(occupied(&game).is_empty());
+        assert_eq!(game.get_game_status().0, GameStage::Running);
+    }
+
+    #[test]
+    fn opening_is_loaded_with_black_to_move() {
+        let opening = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW)
+            .into_iter()
+            .next()
+            .expect("the built-in book must not be empty");
+        let mut game = build_eval_position(Some(&opening)).expect("the opening must load");
+        assert_eq!(*game.get_cur_color(), Color::Black);
+        assert_eq!(
+            game.get_last_move(),
+            opening.stones().last().expect("opening has stones").0 as i16
+        );
+        let mut placed = occupied(&game);
+        let mut expected = opening.stones().to_vec();
+        placed.sort_by_key(|&(index, _)| index);
+        expected.sort_by_key(|&(index, _)| index);
+        assert_eq!(placed, expected, "every opening stone must be on the board");
+        assert_eq!(game.get_game_status().0, GameStage::Running);
+    }
+
+    #[test]
+    fn a_pair_starts_from_colour_swapped_positions() {
+        let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
+        let games = schedule(&book, 4, cfg::BOARD_SIZE);
+        let first = build_eval_position(games[0].opening.as_ref()).expect("first game builds");
+        let second = build_eval_position(games[1].opening.as_ref()).expect("second game builds");
+
+        let mut first_stones = occupied(&first);
+        let mut second_stones = occupied(&second);
+        first_stones.sort_by_key(|&(index, _)| index);
+        second_stones.sort_by_key(|&(index, _)| index);
+        assert_eq!(first_stones.len(), second_stones.len());
+        for ((index_a, color_a), (index_b, color_b)) in first_stones.iter().zip(second_stones.iter())
+        {
+            assert_eq!(index_a, index_b, "the pair uses the same points");
+            assert_ne!(color_a, color_b, "the pair must exchange the colours");
+        }
+        // and the game whose index is odd gives the White stones to net A
+        assert!(games[0].a_first);
+        assert!(!games[1].a_first);
+    }
+
+    #[test]
+    fn win_ratio_and_pair_decisions_follow_the_scoring_convention() {
+        let outcome = EvalOutcome {
+            a_win: 3,
+            b_win: 1,
+            draw: 0,
+            pair_scores: vec![1.0, 0.5, 0.25, 0.0],
+        };
+        assert!((outcome.win_ratio() - 0.75).abs() < 1e-12);
+        // 1.0 counts as a pair win, 0.0 as a loss, 0.5 as a tie; 0.25 is a loss
+        assert_eq!(outcome.pair_decisions(), (1, 2, 1));
+
+        let empty = EvalOutcome {
+            a_win: 0,
+            b_win: 0,
+            draw: 0,
+            pair_scores: Vec::new(),
+        };
+        assert_eq!(empty.win_ratio(), 0.0);
+        assert_eq!(empty.pair_decisions(), (0, 0, 0));
+
+        let all_draws = EvalOutcome {
+            a_win: 0,
+            b_win: 0,
+            draw: 4,
+            pair_scores: vec![0.5, 0.5],
+        };
+        assert!((all_draws.win_ratio() - 0.5).abs() < 1e-12);
+        assert_eq!(all_draws.pair_decisions(), (0, 0, 2));
+    }
+
+    #[test]
+    fn game_scores_fold_into_colour_swapped_pairs() {
+        // a pair is (A as Black, A as White); an unpaired last game is dropped
+        let scores = pair_scores_from_games(&[1.0, 0.0, 0.5, 0.5, 1.0]);
+        assert_eq!(scores, vec![0.5, 0.5]);
+        assert!(pair_scores_from_games(&[]).is_empty());
+        assert!(pair_scores_from_games(&[1.0]).is_empty());
+        // 0.5 for a draw, so a drawn pair scores 0.5 for both games
+        assert_eq!(pair_scores_from_games(&[0.5, 0.5]), vec![0.5]);
+        // one win and one loss is an even pair
+        assert_eq!(pair_scores_from_games(&[1.0, 0.0]), vec![0.5]);
+        // the pairing must be colour balanced, so hitting UPDATE_THRESHOLD needs both
+        // games: a single win cannot carry a pair over 0.55
+        assert_eq!(pair_scores_from_games(&[1.0, 0.5]), vec![0.75]);
+    }
+
+    /// Opt-in end-to-end check of the paired evaluation with a real ONNX weight:
+    ///   cargo test --bin train_and_eval -- --ignored --nocapture
+    /// The weight must match the current `INPUT_CHANNEL_SIZE` (the older local
+    /// `1204.onnx` is a 3-channel model and would be rejected by ONNX Runtime), and
+    /// the self-play data plus ONNX weights are Colab artifacts, hence the ignore.
+    #[tokio::test]
+    #[ignore = "needs a matching local ONNX weight and a few seconds per game"]
+    async fn paired_schedule_runs_with_a_real_model() {
+        let model_path = std::path::Path::new("build/weights/1205.onnx");
+        if !model_path.exists() {
+            eprintln!("skipping: {} not found", model_path.display());
+            return;
+        }
+        let load = || {
+            NeuralNetwork::new(model_path, 16, 2)
+                .ok()
+                .map(|model| Rc::new(RefCell::new(model)))
+        };
+        let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
+        let games = schedule(&book, 2, cfg::BOARD_SIZE);
+        // one batch is the floor, so a small budget still exercises the search
+        let outcome = run_eval_games(load(), load(), &games, 4, 4).await;
+
+        assert_eq!(
+            outcome.a_win + outcome.b_win + outcome.draw,
+            2,
+            "both games of the pair must produce a result"
+        );
+        assert_eq!(outcome.pair_scores.len(), 1);
+        // the pair is a mirror, so a model playing itself is expected to split it
+        // (0.5); with only a few simulations the two searches are not exactly
+        // symmetric, so only the range is asserted
+        assert!(
+            (0.0..=1.0).contains(&outcome.pair_scores[0]),
+            "pair score {} is out of range",
+            outcome.pair_scores[0]
+        );
+        println!(
+            "real-model pair: a_win={}, b_win={}, draw={}, pair score {:.2}",
+            outcome.a_win, outcome.b_win, outcome.draw, outcome.pair_scores[0]
+        );
+    }
+
+    #[test]
+    fn an_already_decided_opening_is_rejected() {
+        // see openings::tests for the parser-level check; here the contract that
+        // matters is that the schedule never hands a decided position to the search
+        let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
+        for scheduled in schedule(&book, 6, cfg::BOARD_SIZE) {
+            let Some(opening) = scheduled.opening.as_ref() else {
+                panic!("a book schedule must always carry an opening");
+            };
+            let mut game = build_eval_position(Some(opening)).expect("book openings must load");
+            assert_eq!(
+                game.get_game_status().0,
+                GameStage::Running,
+                "an evaluation must start from a running position"
+            );
+        }
+    }
+
+    /// End-to-end smoke test of the changed code path: a game that starts from a book
+    /// opening must still play out to exactly one result. No network is attached, so
+    /// the search uses uniform priors and finishes quickly.
+    #[tokio::test]
+    async fn a_book_opening_plays_out_to_one_result() {
+        let opening = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW)
+            .into_iter()
+            .next()
+            .expect("the built-in book must not be empty");
+        let result = play_eval_game(EvalGame {
+            nn_a: None,
+            nn_b: None,
+            a_first: true,
+            do_render: false,
+            num_mcts_sim_a: 1,
+            num_mcts_sim_b: 1,
+            opening: Some(&opening),
+        })
+        .await;
+
+        assert_eq!(
+            result.0 + result.1 + result.2,
+            1,
+            "one game must produce exactly one result, got {result:?}"
+        );
     }
 }
