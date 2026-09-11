@@ -209,11 +209,13 @@ fn player_channels(current_player: i32, stone: i32) -> (f32, f32) {
 /// Builds the ndarray feature/label tensors for a batch without touching the
 /// ONNX Runtime, so the channel layout can be unit-tested without a training
 /// dylib present.
-fn build_batch_arrays(
-    samples: &[Sample],
-) -> (Array4<f32>, Array2<f32>, Array2<f32>) {
-    let mut states =
-        Array4::<f32>::zeros((samples.len(), cfg::CHANNEL_SIZE as usize, BOARD_SIZE, BOARD_SIZE));
+fn build_batch_arrays(samples: &[Sample]) -> (Array4<f32>, Array2<f32>, Array2<f32>) {
+    let mut states = Array4::<f32>::zeros((
+        samples.len(),
+        cfg::CHANNEL_SIZE as usize,
+        BOARD_SIZE,
+        BOARD_SIZE,
+    ));
     let mut policies = Array2::<f32>::zeros((samples.len(), ACTION_SIZE));
     let mut values = Array2::<f32>::zeros((samples.len(), 1));
 
@@ -367,8 +369,8 @@ mod tests {
     use ndarray::s;
 
     use super::{
-        build_batch_arrays, cfg, load_data, player_channels, read_samples, symmetries, Sample,
-        ACTION_SIZE, BOARD_SIZE,
+        ACTION_SIZE, BOARD_SIZE, Sample, build_batch_arrays, cfg, load_data, player_channels,
+        read_samples, symmetries,
     };
 
     /// Writes a data file in the on-disk layout: header (step, optional rule)

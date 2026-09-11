@@ -219,8 +219,7 @@ mod tests {
     fn win_vertical_five_white() {
         // o o o o o in a column
         let col = 7;
-        let stones: Vec<(usize, Color)> =
-            (3..=7).map(|r| (idx(r, col), Color::White)).collect();
+        let stones: Vec<(usize, Color)> = (3..=7).map(|r| (idx(r, col), Color::White)).collect();
         let board = board_with(&stones);
         let judge = CaroJudge::new();
         assert!(judge.check_win(&board, idx(7, col) as i16));

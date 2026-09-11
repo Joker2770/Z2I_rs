@@ -5,7 +5,5 @@
 mod test {
 
     #[test]
-    fn test() {
-        
-    }
+    fn test() {}
 }

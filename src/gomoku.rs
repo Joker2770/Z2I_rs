@@ -587,11 +587,7 @@ mod tests {
     #[test]
     fn standard_caro_six_in_a_row_is_not_win() {
         // xxxxxx, overline does not satisfy exactly five -> not a win
-        let mut stones = vec![
-            (0u16, Color::White),
-            (1, Color::White),
-            (2, Color::White),
-        ];
+        let mut stones = vec![(0u16, Color::White), (1, Color::White), (2, Color::White)];
         stones.extend((3..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
         let mut gomoku = rule9_game(&stones);
         assert_eq!(
@@ -627,11 +623,7 @@ mod tests {
     #[test]
     fn rule_0_overline_wins() {
         // six in a row still wins under free-style
-        let mut stones = vec![
-            (0u16, Color::White),
-            (1, Color::White),
-            (2, Color::White),
-        ];
+        let mut stones = vec![(0u16, Color::White), (1, Color::White), (2, Color::White)];
         stones.extend((3..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
         let mut gomoku = rule0_game(&stones);
         assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
