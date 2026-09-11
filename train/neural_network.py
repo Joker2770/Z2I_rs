@@ -125,10 +125,21 @@ class AlphaLoss(nn.Module):
         super().__init__()
 
     def forward(self, log_ps, vs, target_ps, target_vs):
+        value_loss, policy_loss = self.split(log_ps, vs, target_ps, target_vs)
+
+        return value_loss + policy_loss
+
+    @staticmethod
+    def split(log_ps, vs, target_ps, target_vs):
+        """Value MSE and policy cross-entropy as separate terms.
+
+        The policy term is exactly CE(target || model), so logging it on its own
+        keeps the two heads attributable while training.
+        """
         value_loss = torch.mean(torch.pow(vs - target_vs, 2))
         policy_loss = -torch.mean(torch.sum(target_ps * log_ps, dim=1))
 
-        return value_loss + policy_loss
+        return value_loss, policy_loss
 
 
 class NeuralNetWorkWrapper:
@@ -186,18 +197,59 @@ class NeuralNetWorkWrapper:
             self.optim.zero_grad()
 
             log_ps, vs = self.neural_network(state_batch)
-            loss = self.alpha_loss(log_ps, vs, p_batch, v_batch)
+            value_loss, policy_loss = self.alpha_loss.split(log_ps, vs, p_batch, v_batch)
+            loss = value_loss + policy_loss
 
-            # compute entropy directly from log_ps to avoid a second forward pass
-            with torch.no_grad():
-                probs = torch.exp(log_ps)
-                entropy = -float(torch.mean(torch.sum(probs * log_ps, dim=1)))
+            log_this_epoch = epo % 20 == 0 or epo == epochs
+            # read the metric tensors before backward: the autograd engine releases
+            # the saved buffers of non-leaf tensors while back-propagating
+            loss_value = float(loss.detach())
+            value_loss_value = float(value_loss.detach())
+            policy_loss_value = float(policy_loss.detach())
+            head_metrics = (
+                self._batch_metrics(log_ps, p_batch) if log_this_epoch else (0.0, 0.0, 0.0)
+            )
 
             loss.backward()
             self.optim.step()
 
-            if epo % 20 == 0 or epo == epochs:
-                print("EPOCH: {}/{}, LOSS: {}, ENTROPY: {}".format(epo, epochs, loss.item(), entropy))
+            if log_this_epoch:
+                entropy, target_entropy, agreement = head_metrics
+                print("EPOCH: {}/{}, LOSS: {}, LOSS_V: {}, LOSS_P: {}, ENTROPY: {}, "
+                      "TGT_ENTROPY: {}, ACC: {}".format(
+                          epo, epochs, loss_value, value_loss_value, policy_loss_value,
+                          entropy, target_entropy, agreement))
+
+    @staticmethod
+    def _batch_metrics(log_ps, target_ps):
+        """Policy-head diagnostics for the current batch.
+
+        ENTROPY is the model's own H(p) and TGT_ENTROPY is H(pi_target): the gap
+        between them shows whether the search produced a sharper target than the
+        prediction, and ACC is the share of positions whose argmax move agrees.
+        """
+        with torch.no_grad():
+            probs = torch.exp(log_ps)
+            entropy = -float(torch.mean(torch.sum(probs * log_ps, dim=1)))
+            target_entropy = -float(
+                torch.mean(
+                    torch.sum(
+                        torch.where(
+                            target_ps > 0,
+                            target_ps * torch.log(target_ps.clamp_min(1e-30)),
+                            torch.zeros_like(target_ps),
+                        ),
+                        dim=1,
+                    )
+                )
+            )
+            agreement = float(
+                torch.mean(
+                    (torch.argmax(probs, dim=1) == torch.argmax(target_ps, dim=1)).float()
+                )
+            )
+
+        return entropy, target_entropy, agreement
 
     def infer(self, feature_batch):
         """Predict policy probabilities and values for raw feature tuples."""
