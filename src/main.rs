@@ -32,6 +32,11 @@ use mcts::MCTS;
 use ortopt::NeuralNetwork;
 use rule::{Color, RuleFlag};
 
+/// `INFO rule` bit 2 ("continuous game"): the engine plays both sides itself and keeps
+/// reporting moves instead of waiting for the opponent's `TURN` commands. It is not part
+/// of `RuleFlag` (which only carries the win rules 1/4/8), so it is tracked separately.
+const RULE_BIT_CONTINUOUS_GAME: u8 = 0b0010;
+
 #[derive(Debug, Deserialize)]
 struct ModelConfig {
     #[serde(default = "default_model_path")]
@@ -293,6 +298,11 @@ struct Brain {
     open_mind: bool,
     enable_ponder: bool,
     random_ponder_batches_remaining: usize,
+    /// `INFO rule` bit 2: the engine plays both colors by itself (no opponent, no `TURN`).
+    self_play: bool,
+    /// Whether a `BEGIN` already opened the continuous game stream. It is sticky across
+    /// `START` so later games keep streaming, and cleared when continuous game is turned off.
+    self_play_begun: bool,
 }
 
 impl Brain {
@@ -314,6 +324,8 @@ impl Brain {
             neural_network: None,
             loaded_model_path: None,
             random_ponder_batches_remaining: 0,
+            self_play: false,
+            self_play_begun: false,
         }
     }
 
@@ -451,6 +463,68 @@ impl Brain {
         self.mcts = Some(self.new_mcts(action_size));
     }
 
+    /// Handle `INFO rule <value>`. The continuous-game flag is applied independently of the
+    /// win rule, so `INFO rule 2` takes effect even in a game whose rule bits are unchanged
+    /// (where `apply_rule` returns early).
+    fn apply_rule_value(&mut self, value: u8) {
+        let (rule, self_play) = parse_rule_value(value);
+        self.set_self_play(self_play);
+        self.apply_rule(rule);
+    }
+
+    /// Enable/disable the continuous game (`INFO rule` bit 2). The mode stays on across
+    /// `START` commands; it is turned off by an `INFO rule` value without bit 2.
+    fn set_self_play(&mut self, enabled: bool) {
+        self.self_play = enabled;
+        if !enabled {
+            self.self_play_begun = false;
+        }
+    }
+
+    /// Whether a continuous game is in progress that the engine may move in: mode enabled and
+    /// the current game still running.
+    fn self_play_in_progress(&mut self) -> bool {
+        self.self_play
+            && self
+                .game
+                .as_mut()
+                .is_some_and(|game| game.get_game_status().0 == GameStage::Running)
+    }
+
+    /// Whether the engine should generate the next move on its own: the stream was opened by
+    /// `BEGIN` and a game is still in progress.
+    fn should_self_play(&mut self) -> bool {
+        self.self_play_begun && self.self_play_in_progress()
+    }
+
+    /// One self-play move: play for whichever color is to move. The caller reports the
+    /// coordinate to the manager.
+    async fn self_play_move(&mut self) -> Option<u16> {
+        let started = Instant::now();
+        let action = self.play_move().await;
+        match action {
+            Some(action) => {
+                self.consume_self_play_time(started.elapsed());
+                Some(action)
+            }
+            None => {
+                // No legal move could be produced (no game/search tree, or the move was
+                // rejected): close the stream so the main loop cannot retry forever.
+                self.self_play_begun = false;
+                None
+            }
+        }
+    }
+
+    /// During self-play no manager refreshes `time_left` before every move, so the engine
+    /// deducts its own thinking time from the match clock instead of reusing one value for
+    /// every move. `None` means no match clock was announced.
+    fn consume_self_play_time(&mut self, elapsed: Duration) {
+        if let Some(time_left) = self.time_left.as_mut() {
+            *time_left -= elapsed.as_millis() as i64;
+        }
+    }
+
     async fn play_move(&mut self) -> Option<u16> {
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
@@ -523,8 +597,10 @@ impl Brain {
     }
 
     /// Whether pondering is possible: it is only useful during the opponent's turn.
+    /// A continuous game has no opponent, so pondering never applies there.
     fn should_ponder(&mut self) -> bool {
-        self.enable_ponder
+        !self.self_play
+            && self.enable_ponder
             && (self.neural_network.is_some() || self.random_ponder_batches_remaining > 0)
             && self.game.as_mut().is_some_and(|game| {
                 game.get_game_status().0 == GameStage::Running
@@ -533,6 +609,16 @@ impl Brain {
     }
 
     async fn begin(&mut self) -> Option<u16> {
+        // In a continuous game the engine plays both sides, so there is no own color to
+        // gate on: `BEGIN` opens the stream and the engine plays the move for the color to
+        // move.
+        if self.self_play {
+            if !self.self_play_in_progress() {
+                return None;
+            }
+            self.self_play_begun = true;
+            return self.self_play_move().await;
+        }
         if self.game.as_ref()?.get_cur_color() != &self.ai_color {
             return None;
         }
@@ -598,6 +684,15 @@ fn opposite(color: Color) -> Color {
     }
 }
 
+/// Split an `INFO rule` bitmask into the win rule (bits 1/4/8) and the continuous-game
+/// flag (bit 2).
+fn parse_rule_value(value: u8) -> (RuleFlag, bool) {
+    (
+        RuleFlag::from_bits_truncate(value),
+        value & RULE_BIT_CONTINUOUS_GAME != 0,
+    )
+}
+
 fn parse_coordinates(value: &str) -> Option<(u16, u16)> {
     let mut parts = value.split(',');
     let x = parts.next()?.trim().parse().ok()?;
@@ -658,7 +753,20 @@ async fn run_protocol() {
                 match line_rx.try_recv() {
                     Ok(line) => break Some(line),
                     Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                        if brain.should_ponder() {
+                        if brain.should_self_play() {
+                            // continuous game: keep generating both sides' moves while no
+                            // command is pending, so END/INFO can still interrupt the stream
+                            if let Some(action) = brain.self_play_move().await {
+                                if let Some(game) = brain.game.as_ref() {
+                                    output_move(action, board_size(game));
+                                }
+                                if !brain.should_self_play() {
+                                    eprintln!("MESSAGE continuous game finished");
+                                }
+                            } else {
+                                eprintln!("ERROR continuous game stopped");
+                            }
+                        } else if brain.should_ponder() {
                             brain.ponder_batch().await;
                         } else {
                             break line_rx.recv().await;
@@ -719,11 +827,21 @@ async fn run_protocol() {
             "BEGIN" => {
                 if let Some(action) = brain.begin().await {
                     output_move(action, board_size(brain.game.as_ref().unwrap()));
+                } else if brain.self_play {
+                    // a continuous game is not in progress (no game, or this game is over);
+                    // the stream keeps going by itself after the next START
+                    eprintln!("MESSAGE BEGIN ignored: no continuous game in progress");
                 } else {
                     eprintln!("ERROR cannot begin");
                 }
             }
             "TURN" => {
+                // A continuous game has no opponent to wait for: the engine generates both
+                // sides itself, so a manager-supplied move would desynchronize the board.
+                if brain.self_play {
+                    eprintln!("MESSAGE TURN ignored during continuous game");
+                    continue;
+                }
                 let action = fields
                     .next()
                     .and_then(parse_coordinates)
@@ -751,7 +869,7 @@ async fn run_protocol() {
                         if let Some(value) =
                             fields.next().and_then(|value| value.parse::<u8>().ok())
                         {
-                            brain.apply_rule(RuleFlag::from_bits_truncate(value));
+                            brain.apply_rule_value(value);
                         }
                     }
                     Some("timeout_turn") => {
@@ -1163,5 +1281,202 @@ mod tests {
             &(RuleFlag::Standard | RuleFlag::Caro)
         );
         assert!(brain.mcts.is_some());
+    }
+
+    // --- INFO rule 2: continuous game (engine plays both colors) ---
+
+    #[test]
+    fn info_rule_2_enables_self_play_without_changing_the_win_rule() {
+        let mut brain = test_brain();
+
+        brain.apply_rule_value(2); // INFO rule 2
+
+        assert!(brain.self_play);
+        assert_eq!(brain.rule, RuleFlag::FreeStyle);
+        // no game yet: the stream only starts with BEGIN after a START
+        assert!(!brain.should_self_play());
+    }
+
+    #[test]
+    fn info_rule_value_splits_win_rule_from_continuous_game_bit() {
+        assert_eq!(parse_rule_value(2), (RuleFlag::FreeStyle, true));
+        assert_eq!(
+            parse_rule_value(9),
+            (RuleFlag::Standard | RuleFlag::Caro, false)
+        );
+        assert_eq!(
+            parse_rule_value(11),
+            (RuleFlag::Standard | RuleFlag::Caro, true)
+        );
+        assert_eq!(parse_rule_value(0), (RuleFlag::FreeStyle, false));
+    }
+
+    #[test]
+    fn info_rule_without_bit_2_turns_self_play_off() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+        brain.self_play_begun = true;
+        assert!(brain.self_play);
+
+        brain.apply_rule_value(1);
+
+        assert!(!brain.self_play);
+        assert!(!brain.self_play_begun);
+        assert_eq!(brain.rule, RuleFlag::Standard);
+    }
+
+    #[test]
+    fn info_rule_2_keeps_an_in_progress_game_on_the_board() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        assert!(brain.play_opponent_move(112));
+
+        brain.apply_rule_value(2); // mid-game switch to continuous game
+
+        let game = brain.game.as_ref().unwrap();
+        assert_eq!(game.get_last_move(), 112);
+        assert_eq!(game.get_board()[7][7], Color::Black);
+    }
+
+    #[test]
+    fn continuous_game_disables_pondering() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.ai_color = Color::White;
+        assert!(brain.should_ponder());
+
+        brain.apply_rule_value(2);
+
+        assert!(!brain.should_ponder());
+    }
+
+    #[test]
+    fn self_play_deducts_thinking_time_from_the_match_clock() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.apply_rule_value(2);
+        brain.time_left = Some(5_000);
+
+        brain.consume_self_play_time(Duration::from_millis(420));
+
+        assert_eq!(brain.time_left, Some(4_580));
+    }
+
+    #[test]
+    fn self_play_without_match_clock_leaves_time_left_unset() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.apply_rule_value(2);
+
+        brain.consume_self_play_time(Duration::from_millis(420));
+
+        assert_eq!(brain.time_left, None);
+    }
+
+    #[test]
+    fn continuous_game_stream_waits_for_begin() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+        assert!(brain.start(15));
+
+        // START alone must not emit moves: the stream is opened by BEGIN
+        assert!(brain.self_play_in_progress());
+        assert!(!brain.should_self_play());
+    }
+
+    #[tokio::test]
+    async fn continuous_game_begin_without_a_running_game_returns_none() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+
+        assert!(brain.begin().await.is_none()); // no START yet
+        assert!(!brain.self_play_begun);
+
+        assert!(brain.start(5));
+        assert!(brain.begin().await.is_some());
+        assert!(brain.self_play_begun);
+    }
+
+    #[tokio::test]
+    async fn failed_self_play_move_closes_the_stream() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+        assert!(brain.start(5));
+        assert!(brain.begin().await.is_some());
+
+        brain.game = None; // no board left to play on
+
+        assert!(brain.self_play_move().await.is_none());
+        assert!(!brain.self_play_begun);
+        assert!(!brain.should_self_play());
+    }
+
+    #[tokio::test]
+    async fn continuous_game_plays_both_colors_after_begin() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2); // INFO rule 2 before START
+        assert!(brain.start(15));
+
+        let black = brain.begin().await.expect("BEGIN should open the game");
+        assert_eq!(brain.game.as_ref().unwrap().get_cur_color(), &Color::White);
+
+        let white = brain.self_play_move().await.expect("White should move");
+
+        assert_ne!(black, white);
+        let game = brain.game.as_ref().unwrap();
+        assert_eq!(game.get_cur_color(), &Color::Black);
+        assert_eq!(
+            game.get_board()[black as usize / 15][black as usize % 15],
+            Color::Black
+        );
+        assert_eq!(
+            game.get_board()[white as usize / 15][white as usize % 15],
+            Color::White
+        );
+    }
+
+    #[tokio::test]
+    async fn continuous_game_stream_runs_until_the_game_is_over() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+        assert!(brain.start(15));
+        assert!(brain.begin().await.is_some());
+
+        let mut moves = 1usize;
+        while brain.should_self_play() {
+            assert!(brain.self_play_move().await.is_some());
+            moves += 1;
+            assert!(moves <= 225, "self-play must not exceed the board size");
+        }
+
+        // a finished game means a win/loss or a full board, with one stone per move
+        let game = brain.game.as_mut().unwrap();
+        assert!(game.get_game_status().0 != GameStage::Running);
+        let stones = game
+            .get_legal_moves()
+            .iter()
+            .filter(|&&legal| legal == 0)
+            .count();
+        assert_eq!(stones, moves);
+    }
+
+    #[tokio::test]
+    async fn continuous_game_stream_resumes_after_a_new_start() {
+        let mut brain = test_brain();
+        brain.apply_rule_value(2);
+        assert!(brain.start(5));
+        assert!(brain.begin().await.is_some());
+
+        let mut moves = 1usize;
+        while brain.should_self_play() {
+            assert!(brain.self_play_move().await.is_some());
+            moves += 1;
+        }
+        assert_eq!(moves, 25, "the 5x5 board should have been played out");
+        assert!(brain.self_play_begun, "BEGIN stays valid for later games");
+
+        // a new game streams again without another BEGIN
+        assert!(brain.start(5));
+        assert!(brain.should_self_play());
     }
 }

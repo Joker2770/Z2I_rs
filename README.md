@@ -150,7 +150,7 @@ Normally `START` replies `OK`, and `BEGIN`/`TURN` reply a move coordinate in `x,
 | `BEGIN` | Request the first move when the AI plays first. |
 | `TURN x,y` | Inform the opponent's move and request the AI's move. |
 | `BOARD` | Start receiving the full board; after `DONE`, request the AI's move. |
-| `INFO rule value` | Set the rule flag. |
+| `INFO rule value` | Set the rule flag (bit 1 = exactly-five, bit 2 = continuous game, bit 4 = Renju, bit 8 = Caro). |
 | `ABOUT` | Return the engine name and version. |
 | `END` | End the process. |
 
@@ -174,6 +174,27 @@ INFO rule 4
 ```
 
 selects the Renju rule. Rule flag combinations are parsed by the Rust side.
+
+## Continuous game (self-play, `INFO rule` bit 2)
+
+`INFO rule` bit 2 puts the engine into a *continuous game*: it plays both colors itself, without an opponent, and reports every move to the manager on stdout. This suits custom managers and board viewers that consume a plain coordinate stream.
+
+```text
+INFO rule 2
+START 15
+BEGIN
+```
+
+Behavior:
+
+- `INFO rule 2` enables the mode; the other bits still select the win rule, so `INFO rule 2` alone keeps FreeStyle, and `INFO rule 10` selects Caro *and* continuous game. An `INFO rule` value without bit 2 turns the mode off again.
+- `BEGIN` opens the move stream; the engine replies with the first coordinate and then keeps playing both colors until the game is over. While the stream runs, each reply is one `x,y` line on stdout, and `MESSAGE continuous game finished` is written to stderr when the game ends.
+- After the game is over the engine waits. A new `START` starts a new game and the stream resumes without another `BEGIN`; send `BEGIN` anyway if you prefer, it is simply ignored while no continuous game is in progress.
+- `TURN` is ignored during the mode (the engine has no opponent), and pondering is disabled because the engine is always the side to move.
+- Because no manager refreshes the clock per move, the engine deducts its own thinking time from the last `INFO time_left` value; `INFO timeout_turn` still caps each move.
+- stdout carries only the move coordinates (plus `OK` for `START` and optional `DEBUG thinking ...` lines when `open_mind` is enabled in the configuration); all status messages go to stderr.
+
+Note that spontaneous multi-line output is outside the strict request/response pattern of the piskvork protocol, so a stock manager such as qpiskvork will lose sync. Use this mode with a manager built for it.
 
 ## Training & evaluation
 
