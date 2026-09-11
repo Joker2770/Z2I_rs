@@ -151,6 +151,8 @@ Normally `START` replies `OK`, and `BEGIN`/`TURN` reply a move coordinate in `x,
 | `TURN x,y` | Inform the opponent's move and request the AI's move. |
 | `BOARD` | Start receiving the full board; after `DONE`, request the AI's move. |
 | `INFO rule value` | Set the rule flag (bit 1 = exactly-five, bit 2 = continuous game, bit 4 = Renju, bit 8 = Caro). |
+| `INFO timeout_turn ms` | Per-move time limit; the engine stops searching once the deadline is reached. |
+| `INFO time_left ms` | Remaining match time announced by the manager; it caps the move as well and is authoritative for the move that follows it. |
 | `ABOUT` | Return the engine name and version. |
 | `END` | End the process. |
 
@@ -191,7 +193,9 @@ Behavior:
 - `BEGIN` opens the move stream; the engine replies with the first coordinate and then keeps playing both colors until the game is over. While the stream runs, each reply is one `x,y` line on stdout, and `MESSAGE continuous game finished` is written to stderr when the game ends.
 - After the game is over the engine waits. A new `START` starts a new game and the stream resumes without another `BEGIN`; send `BEGIN` anyway if you prefer, it is simply ignored while no continuous game is in progress.
 - `TURN` is ignored during the mode (the engine has no opponent), and pondering is disabled because the engine is always the side to move.
-- Because no manager refreshes the clock per move, the engine deducts its own thinking time from the last `INFO time_left` value; `INFO timeout_turn` still caps each move.
+- Because no manager refreshes the clock per move, the engine deducts its own thinking time from the last `INFO time_left` value; `INFO timeout_turn` still caps each move. An `INFO time_left` announcement received before a move is authoritative and skips that deduction for that move, so a manager that refreshes the clock before every move and one that never refreshes it both get correct accounting.
+- Announcements are handled in command order, so a manager that reacts to a reported move reaches the engine while the *next* move is already being searched: the update applies from the move after that one. The engine never waits for an announcement, and the manager's value always replaces the locally deducted clock.
+- In `TURN`-driven mode the engine never deducts locally: the `INFO time_left` a manager sends before each move is used as-is, so every move gets the announced budget.
 - stdout carries only the move coordinates (plus `OK` for `START` and optional `DEBUG thinking ...` lines when `open_mind` is enabled in the configuration); all status messages go to stderr.
 
 Note that spontaneous multi-line output is outside the strict request/response pattern of the piskvork protocol, so a stock manager such as qpiskvork will lose sync. Use this mode with a manager built for it.

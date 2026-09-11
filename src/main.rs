@@ -292,6 +292,10 @@ struct Brain {
     intra_thread_num: u8,
     timeout_turn: Option<u64>,
     time_left: Option<i64>,
+    /// Whether `INFO time_left` was received since the last self-play move. The announced
+    /// value already accounts for the manager-side elapsed time, so the engine must not
+    /// deduct its thinking time on top of it.
+    time_left_refreshed: bool,
     config: AppConfig,
     neural_network: Option<Rc<RefCell<NeuralNetwork>>>,
     loaded_model_path: Option<PathBuf>,
@@ -315,6 +319,7 @@ impl Brain {
             rule: RuleFlag::FreeStyle,
             timeout_turn: None,
             time_left: None,
+            time_left_refreshed: false,
             simulation_num: config.mcts.num_mct_sims,
             sim_per_batch_num: config.mcts.num_sim_per_batch,
             intra_thread_num: config.onnx.num_intra_thread,
@@ -519,7 +524,13 @@ impl Brain {
     /// During self-play no manager refreshes `time_left` before every move, so the engine
     /// deducts its own thinking time from the match clock instead of reusing one value for
     /// every move. `None` means no match clock was announced.
+    ///
+    /// A manager announcement takes precedence: the announced value already covers the time
+    /// spent on this move, so the deduction is skipped for the first self-play move after it.
     fn consume_self_play_time(&mut self, elapsed: Duration) {
+        if std::mem::take(&mut self.time_left_refreshed) {
+            return;
+        }
         if let Some(time_left) = self.time_left.as_mut() {
             *time_left -= elapsed.as_millis() as i64;
         }
@@ -884,6 +895,9 @@ async fn run_protocol() {
                             fields.next().and_then(|value| value.parse::<i64>().ok())
                         {
                             brain.time_left = Some(value);
+                            // the manager just refreshed the clock: its value is authoritative
+                            // for the next move, so self-play must not deduct on top of it
+                            brain.time_left_refreshed = true;
                         }
                     }
                     _ => {}
@@ -1371,6 +1385,46 @@ mod tests {
         brain.consume_self_play_time(Duration::from_millis(420));
 
         assert_eq!(brain.time_left, None);
+    }
+
+    #[test]
+    fn manager_time_left_refresh_suppresses_the_self_play_deduction() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.apply_rule_value(2);
+        brain.time_left = Some(5_000);
+        brain.time_left_refreshed = true; // as set by the INFO time_left handler
+
+        brain.consume_self_play_time(Duration::from_millis(420));
+
+        // the announced value is used as-is: deducting would count the same move twice
+        assert_eq!(brain.time_left, Some(5_000));
+    }
+
+    #[test]
+    fn self_play_deducts_again_once_the_refresh_is_consumed() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.apply_rule_value(2);
+        brain.time_left = Some(5_000);
+        brain.time_left_refreshed = true;
+
+        brain.consume_self_play_time(Duration::from_millis(420)); // announcement consumed
+        brain.consume_self_play_time(Duration::from_millis(420)); // no new announcement: deduct
+
+        assert_eq!(brain.time_left, Some(4_580));
+    }
+
+    #[tokio::test]
+    async fn opponent_driven_moves_leave_the_match_clock_untouched() {
+        let mut brain = test_brain();
+        assert!(brain.start(15));
+        brain.time_left = Some(5_000);
+        brain.time_left_refreshed = true;
+
+        brain.turn(100).await.expect("TURN should return a move");
+
+        assert_eq!(brain.time_left, Some(5_000));
     }
 
     #[test]
