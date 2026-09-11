@@ -14,6 +14,28 @@ use crate::{
     rule::Color,
 };
 
+/// Move-selection temperature after `step` plies of a self-play game.
+///
+/// The decay length is derived from the profile's own anchors instead of being
+/// hand-tuned, which pins both ends of the schedule: `temp_at(EXPLORE_STEP)` is
+/// `EXPLORE_TEMP`, and `temp_at(GREEDY_FROM_STEP)` is exactly `GREEDY_TEMP`, so the
+/// schedule is always spent exactly by the ply the profile is expected to reach and
+/// every later ply selects greedily. Changing `GREEDY_FROM_STEP` therefore only moves
+/// the ply after which the game stops exploring, it does not change how much the opening
+/// explores.
+pub fn temp_at(step: u16) -> f64 {
+    if step >= cfg::GREEDY_FROM_STEP {
+        return cfg::GREEDY_TEMP;
+    }
+
+    let decay_len = f64::from(cfg::GREEDY_FROM_STEP - cfg::EXPLORE_STEP)
+        / (cfg::EXPLORE_TEMP / cfg::GREEDY_TEMP).ln();
+
+    cfg::GREEDY_TEMP.max(
+        cfg::EXPLORE_TEMP * (-f64::from(step.saturating_sub(cfg::EXPLORE_STEP)) / decay_len).exp(),
+    )
+}
+
 pub struct SelfPlay {
     neural_network: Rc<RefCell<NeuralNetwork>>,
 }
@@ -59,7 +81,7 @@ impl SelfPlay {
 
             let mut hasher = Sha256::new();
             while game_status.0 == GameStage::Running {
-                let temp = cfg::temp_at(step);
+                let temp = temp_at(step);
                 if cfg::RENDER_AT_SELF_PLAY {
                     println!("Step: {}", step);
                     println!("temp: {}", temp);
@@ -239,6 +261,9 @@ impl SelfPlay {
 #[cfg(test)]
 mod tests {
 
+    use crate::play;
+    use super::cfg;
+
     use rand_distr::{Distribution, multi::Dirichlet};
 
     #[test]
@@ -272,5 +297,47 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn test_temp_at_explores_until_warmup_step() {
+        for step in 0..=cfg::EXPLORE_STEP {
+            assert_eq!(play::temp_at(step), cfg::EXPLORE_TEMP);
+        }
+    }
+
+    #[test]
+    fn test_temp_at_is_spent_at_greedy_from_step() {
+        // mcts::policy_from_children turns anything at (or below) GREEDY_TEMP into a one-hot
+        // greedy selection, so reaching the floor at the anchor is the point of the schedule
+        assert_eq!(play::temp_at(cfg::GREEDY_FROM_STEP), cfg::GREEDY_TEMP);
+
+        for step in cfg::GREEDY_FROM_STEP..cfg::GREEDY_FROM_STEP + 200 {
+            assert_eq!(play::temp_at(step), cfg::GREEDY_TEMP);
+        }
+    }
+
+    #[test]
+    fn test_temp_at_is_monotonically_decreasing() {
+        let mut previous = play::temp_at(0);
+        for step in 1..u16::from(cfg::GREEDY_FROM_STEP) * 4 {
+            let current = play::temp_at(step);
+            assert!(current <= previous, "temp rose at step {step}");
+            assert!(current >= cfg::GREEDY_TEMP);
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn test_temp_at_interpolates_between_anchors() {
+        let mid = (cfg::EXPLORE_STEP + cfg::GREEDY_FROM_STEP) / 2;
+        let temp = play::temp_at(mid);
+
+        assert!(temp > cfg::GREEDY_TEMP && temp < cfg::EXPLORE_TEMP);
+
+        // the decay is exponential, so equal spacing means equal ratios: the geometric mean
+        // of the two anchors has to be the value halfway between them
+        let expected = (cfg::EXPLORE_TEMP * cfg::GREEDY_TEMP).sqrt();
+        assert!((temp - expected).abs() < 1e-12);
     }
 }
