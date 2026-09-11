@@ -12,8 +12,13 @@ pub mod cfg {
     pub const C_VIRTUAL_LOSS: f64 = 1.0;
     #[cfg(feature = "tic-tac-toe")]
     pub const DEFAULT_SIMULATION_NUM: usize = 32;
+    // temperature anchors (see cfg::temp_at): full exploration for the opening plies,
+    // then an exponential decay that reaches GREEDY_TEMP by the GREEDY_FROM_STEP-th ply;
+    // a 3x3 game is over after at most 9 plies
     #[cfg(feature = "tic-tac-toe")]
     pub const EXPLORE_STEP: u16 = 3;
+    #[cfg(feature = "tic-tac-toe")]
+    pub const GREEDY_FROM_STEP: u16 = 9;
     #[cfg(feature = "tic-tac-toe")]
     pub const DIRI: f64 = 0.3;
     #[cfg(feature = "tic-tac-toe")]
@@ -39,8 +44,16 @@ pub mod cfg {
     // it still grows with weight generation (SIMS_BOOST_*)
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const DEFAULT_SIMULATION_NUM: usize = 400;
+    // temperature anchors (see cfg::temp_at): full exploration for the opening plies,
+    // then an exponential decay that reaches GREEDY_TEMP by the GREEDY_FROM_STEP-th ply.
+    // 36 plies is the measured average self-play game length of this profile (iter-1 renju
+    // log: 46840 samples / 8 board symmetries / 164 games = 35.7 plies), so the schedule is
+    // spent by the time an average game ends; the previous fixed decay of 12 only reached
+    // the floor at ply 98 (2.7x the average game), i.e. selection was never greedy.
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const EXPLORE_STEP: u16 = 15;
+    pub const EXPLORE_STEP: u16 = 10;
+    #[cfg(not(feature = "tic-tac-toe"))]
+    pub const GREEDY_FROM_STEP: u16 = 36;
     // AlphaZero exploration noise: π = (1 - DIRI)·p + DIRI·η, η ~ Dir(DIRICHLET_ALPHA)
     // DIRI is the Dirichlet noise mixing factor ε (0.25 in the AlphaZero paper)
     #[cfg(not(feature = "tic-tac-toe"))]
@@ -94,9 +107,11 @@ pub mod cfg {
     // 8 - caro
     // 1|8 - standard-caro
     pub const DEFAULT_RULE_FLAG: u8 = 0b_0000_0000;
+    // move-selection temperature: EXPLORE_TEMP while step <= EXPLORE_STEP, then an
+    // exponential decay down to GREEDY_TEMP, which mcts::policy_from_children treats as
+    // one-hot greedy selection
     pub const EXPLORE_TEMP: f64 = 1.0;
     pub const GREEDY_TEMP: f64 = 1e-3;
-    pub const TEMP_DECAY: u8 = 12;
     // minimum remaining time (ms) required before starting a full inference batch;
     // keep a margin above the measured ~1.3s batch time on the reference CPU
     pub const TIME_RESERVE_MS: u64 = 1800;
@@ -116,4 +131,72 @@ pub mod cfg {
     pub const OPEN_MIND_THINKING_MAX_CHILDREN: usize = 10;
 
     pub const INFER_ASYNC: bool = false;
+
+    /// Move-selection temperature after `step` plies of a self-play game.
+    ///
+    /// The decay length is derived from the profile's own anchors instead of being
+    /// hand-tuned, which pins both ends of the schedule: `temp_at(EXPLORE_STEP)` is
+    /// `EXPLORE_TEMP`, and `temp_at(GREEDY_FROM_STEP)` is exactly `GREEDY_TEMP`, so the
+    /// schedule is always spent exactly by the ply the profile is expected to reach and
+    /// every later ply selects greedily. Changing `GREEDY_FROM_STEP` therefore only moves
+    /// the ply after which the game stops exploring, it does not change how much the opening
+    /// explores.
+    pub fn temp_at(step: u16) -> f64 {
+        if step >= GREEDY_FROM_STEP {
+            return GREEDY_TEMP;
+        }
+
+        let decay_len =
+            f64::from(GREEDY_FROM_STEP - EXPLORE_STEP) / (EXPLORE_TEMP / GREEDY_TEMP).ln();
+
+        GREEDY_TEMP
+            .max(EXPLORE_TEMP * (-f64::from(step.saturating_sub(EXPLORE_STEP)) / decay_len).exp())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cfg;
+
+    #[test]
+    fn test_temp_at_explores_until_warmup_step() {
+        for step in 0..=cfg::EXPLORE_STEP {
+            assert_eq!(cfg::temp_at(step), cfg::EXPLORE_TEMP);
+        }
+    }
+
+    #[test]
+    fn test_temp_at_is_spent_at_greedy_from_step() {
+        // mcts::policy_from_children turns anything at (or below) GREEDY_TEMP into a one-hot
+        // greedy selection, so reaching the floor at the anchor is the point of the schedule
+        assert_eq!(cfg::temp_at(cfg::GREEDY_FROM_STEP), cfg::GREEDY_TEMP);
+
+        for step in cfg::GREEDY_FROM_STEP..cfg::GREEDY_FROM_STEP + 200 {
+            assert_eq!(cfg::temp_at(step), cfg::GREEDY_TEMP);
+        }
+    }
+
+    #[test]
+    fn test_temp_at_is_monotonically_decreasing() {
+        let mut previous = cfg::temp_at(0);
+        for step in 1..u16::from(cfg::GREEDY_FROM_STEP) * 4 {
+            let current = cfg::temp_at(step);
+            assert!(current <= previous, "temp rose at step {step}");
+            assert!(current >= cfg::GREEDY_TEMP);
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn test_temp_at_interpolates_between_anchors() {
+        let mid = (cfg::EXPLORE_STEP + cfg::GREEDY_FROM_STEP) / 2;
+        let temp = cfg::temp_at(mid);
+
+        assert!(temp > cfg::GREEDY_TEMP && temp < cfg::EXPLORE_TEMP);
+
+        // the decay is exponential, so equal spacing means equal ratios: the geometric mean
+        // of the two anchors has to be the value halfway between them
+        let expected = (cfg::EXPLORE_TEMP * cfg::GREEDY_TEMP).sqrt();
+        assert!((temp - expected).abs() < 1e-12);
+    }
 }

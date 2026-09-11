@@ -26,14 +26,6 @@ impl SelfPlay {
     pub async fn play(&self, save_id: u16, simulation_num: usize, board_size: u8, n_in_row: u8) {
         let buffer_len: u16 = board_size as u16 * board_size as u16 + 1;
 
-        let get_temp = |&step: &u16| -> f64 {
-            let t_min = cfg::GREEDY_TEMP;
-            let warmup = cfg::EXPLORE_STEP;
-            let decay = cfg::TEMP_DECAY;
-
-            t_min.max(1.0 * (-(0.0f64.max(step as f64 - warmup as f64)) / decay as f64).exp())
-        };
-
         let game = Gomoku::new(board_size, n_in_row);
         if let Some(gg) = game {
             let game_ref = Rc::new(RefCell::new(gg));
@@ -67,7 +59,7 @@ impl SelfPlay {
 
             let mut hasher = Sha256::new();
             while game_status.0 == GameStage::Running {
-                let temp = get_temp(&step);
+                let temp = cfg::temp_at(step);
                 if cfg::RENDER_AT_SELF_PLAY {
                     println!("Step: {}", step);
                     println!("temp: {}", temp);
