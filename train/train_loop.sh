@@ -34,6 +34,8 @@ PYTHON="${PYTHON:-python3}"
 #   EVAL_WORKERS=<n>  games to play concurrently (default 2; 1 keeps the board rendering)
 # Both commands log "eval cost: ... games <s> (<s> per pair) ..." to eval_result.log, so a
 # session budget can come from a measured per-pair cost instead of a guess.
+# eval_with_winner also runs the weight probe on the candidate first (about a second) and
+# rejects it without playing any games when it fails (EVAL_SKIP_VERIFY=1 bypasses that).
 # Run acceptance evaluation every CHECK_FREQ rounds (1 = every round); rounds in between skip
 # evaluation and accept the candidate directly
 # Colab T4 sessions are time-limited; evaluate every other round by default to shorten each round

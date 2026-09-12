@@ -330,8 +330,12 @@ class NeuralNetWorkWrapper:
 
     def save_model(self, filepath):
         """Save network state and an inference ONNX model to a path prefix."""
-        # remove old files with the same name before saving to avoid stale models
-        for suffix in ('.pkl', '.onnx'):
+        # Remove old files with the same name before saving to avoid stale models.
+        # '.onnx.data' must be removed too: torch 2.6+ exports the weights of this model
+        # as a companion '.onnx.data' next to the '.onnx' graph shell, and a stale
+        # companion paired with a fresh shell loads happily while playing like a random
+        # network -- exactly the failure mode that silently ruins an evaluation round.
+        for suffix in ('.pkl', '.onnx', '.onnx.data'):
             old_path = filepath + suffix
             if os.path.exists(old_path):
                 os.remove(old_path)

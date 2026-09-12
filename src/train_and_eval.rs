@@ -12,6 +12,7 @@ mod openings;
 mod ortcommon;
 mod ortopt;
 mod play;
+mod probe;
 mod renju;
 mod rule;
 mod standard;
@@ -22,6 +23,7 @@ use mcts::MCTS;
 use openings::{Opening, ScheduledGame, load_openings, pair_count, schedule, sign_test_p_value};
 use ortopt::NeuralNetwork;
 use play::SelfPlay;
+use probe::probe_weight;
 use rule::Color;
 
 use std::{
@@ -67,6 +69,30 @@ where
 {
     let parsed = value.trim().parse::<T>().ok()?;
     (parsed > T::from(0u8)).then_some(parsed)
+}
+
+/// Whether a weight may be evaluated against itself.
+///
+/// Self-matches are skipped by default (they burn a round and jitter the shared Elo with
+/// search noise), but a self-match is also the cheapest harness control: it must score
+/// ~0.5 at any budget, so `EVAL_ALLOW_SELF_MATCH=1` re-enables it for that check.
+fn allow_self_match() -> bool {
+    matches!(
+        env::var("EVAL_ALLOW_SELF_MATCH").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
+}
+
+/// Whether the weight probe may be skipped.
+///
+/// The probe is what stops a destroyed weight from burning a whole evaluation round, so it
+/// runs by default; `EVAL_SKIP_VERIFY=1` is only for measuring a weight you already know is
+/// bad (or for timing an evaluation without the extra second).
+fn skip_verify() -> bool {
+    matches!(
+        env::var("EVAL_SKIP_VERIFY").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
 }
 
 pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
@@ -582,7 +608,7 @@ async fn run_eval_games(
         ..EvalOutcome::default()
     };
     let mut game_scores = Vec::with_capacity(results.len());
-    for result in &results {
+    for (position, result) in results.iter().enumerate() {
         outcome.a_win += result.a_win;
         outcome.b_win += result.b_win;
         outcome.draw += result.draw;
@@ -596,14 +622,18 @@ async fn run_eval_games(
             result.elapsed.as_secs_f64()
         );
         if game_scores.len().is_multiple_of(2) {
+            // report the pair's own two game durations: the wall clock of this merge loop
+            // says nothing about the games, because the workers have already finished
+            let previous = &results[position - 1];
             println!(
-                "Eval pair {} end: a score {:.2} (colour swapped, {:.1}s so far)",
+                "Eval pair {} end: a score {:.2} (colour swapped, {:.1}s + {:.1}s)",
                 game_scores.len() / 2,
                 pair_scores_from_games(&game_scores)
                     .last()
                     .copied()
                     .unwrap_or_default(),
-                started.elapsed().as_secs_f64()
+                previous.elapsed.as_secs_f64(),
+                result.elapsed.as_secs_f64()
             );
         }
     }
@@ -721,6 +751,28 @@ fn inherit_elo(new_weight: i32, parent_weight: i32) {
     save_elo(&ratings);
 }
 
+/// Roll the pipeline back to `best_weight` and append `message` to the evaluation log.
+///
+/// A rejected candidate is not a lost round: `generate` always starts from best, so the next
+/// round simply retrains from the same starting point, reusing the candidate's id.
+fn reject_candidate(best_weight: i32, message: &str) {
+    // stdout only: the same text goes to eval_result.log, and printing it twice (stdout and
+    // stderr) just looks like a duplicated error in a captured log
+    println!("{}", message.trim_end());
+    fs::write(
+        "current_and_best_weight.txt",
+        best_weight.to_string() + " " + &best_weight.to_string(),
+    )
+    .expect("Unable to write file");
+    fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("eval_result.log")
+        .expect("Unable to open file")
+        .write_all(message.as_bytes())
+        .expect("Unable to write data");
+}
+
 /// Update both sides' Elo from one evaluation match result, returning a log description
 fn update_elo(weight_a: i32, weight_b: i32, outcome: &EvalOutcome) -> String {
     let total = outcome.a_win + outcome.b_win + outcome.draw;
@@ -822,28 +874,19 @@ async fn main() {
                 current_weight, best_weight
             );
 
-            if current_weight >= 0 && current_weight == best_weight {
+            if current_weight >= 0 && current_weight == best_weight && !allow_self_match() {
                 // Current and best are the same weight (a re-run right after a rollback, or
                 // a round that was accepted without training in between). Playing it against
                 // itself would burn a round, report a meaningless result out of search
-                // noise, and jitter the single shared Elo rating.
-                let message = format!(
-                    "current weight {current_weight} == best weight {best_weight}: \
-                     nothing to evaluate, best kept\n"
+                // noise, and jitter the single shared Elo rating. EVAL_ALLOW_SELF_MATCH=1
+                // runs it anyway, which is the cheapest control that the harness is sound.
+                reject_candidate(
+                    best_weight,
+                    &format!(
+                        "current weight {current_weight} == best weight {best_weight}: \
+                         nothing to evaluate, best kept (EVAL_ALLOW_SELF_MATCH=1 to run it anyway)\n"
+                    ),
                 );
-                println!("{}", message.trim_end());
-                fs::write(
-                    "current_and_best_weight.txt",
-                    best_weight.to_string() + " " + &best_weight.to_string(),
-                )
-                .expect("Unable to write file");
-                fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open("eval_result.log")
-                    .expect("Unable to open file")
-                    .write_all(message.as_bytes())
-                    .expect("Unable to write data");
                 return;
             }
 
@@ -852,6 +895,76 @@ async fn main() {
             println!("Eval sims: {} per move ({})", sims, sims_source);
             let num_mcts_sim_a: u16 = sims;
             let num_mcts_sim_b: u16 = sims;
+            let weights_dir = env::current_dir()
+                .expect("Unable to get current folder")
+                .join("weights");
+
+            // Gate on the candidate's health before spending any games: a destroyed weight
+            // (bad targets, a failed conversion, a stale ONNX companion) plays like a random
+            // policy and would lose every game, which is expensive to discover and easy to
+            // mistake for a real regression. The probe costs about a second.
+            if !skip_verify() {
+                let (report_text, rejection) =
+                    match probe_weight(&weights_dir, current_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
+                        .await
+                    {
+                        Ok(report) => {
+                            let text = report.summary();
+                            if report.passed() {
+                                (text, None)
+                            } else {
+                                let failed: Vec<String> = report
+                                    .failures()
+                                    .iter()
+                                    .map(|criterion| criterion.name.clone())
+                                    .collect();
+                                (
+                                    text,
+                                    Some(format!(
+                                        "weight probe failed: {} (EVAL_SKIP_VERIFY=1 to evaluate anyway)",
+                                        failed.join(", ")
+                                    )),
+                                )
+                            }
+                        }
+                        // a weight that cannot even be probed must not become best
+                        Err(error) => (
+                            format!("weight probe could not run: {error}\n"),
+                            Some(error),
+                        ),
+                    };
+                print!("{report_text}");
+                if let Some(reason) = rejection {
+                    reject_candidate(
+                        best_weight,
+                        &format!("candidate rejected before evaluation: {reason}\n{report_text}"),
+                    );
+                    return;
+                }
+                // Best is the incumbent and stays best either way, but if it is unhealthy the
+                // candidate gate would reject every round without saying why: say it here.
+                if current_weight != best_weight
+                    && let Ok(best_report) =
+                        probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
+                            .await
+                    && !best_report.passed()
+                {
+                    let warning = format!(
+                        "WARNING: best weight {best_weight} also fails the probe; every \
+                         candidate trained from it will look broken:\n{}",
+                        best_report.summary()
+                    );
+                    eprintln!("{}", warning.trim_end());
+                    fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open("eval_result.log")
+                        .expect("Unable to open file")
+                        .write_all(warning.as_bytes())
+                        .expect("Unable to write data");
+                }
+            }
+
             let book = load_openings(
                 std::path::Path::new(openings::OPENING_FILE),
                 cfg::BOARD_SIZE,
@@ -931,7 +1044,8 @@ async fn main() {
 
             if !result.complete || result.a_win + result.b_win + result.draw == 0 {
                 // no usable result: never promote on a failed evaluation
-                result_log_info.push_str("evaluation produced no usable result, candidate rejected\n");
+                result_log_info
+                    .push_str("evaluation produced no usable result, candidate rejected\n");
                 fs::write(
                     "current_and_best_weight.txt",
                     best_weight.to_string() + " " + &best_weight.to_string(),
@@ -969,6 +1083,26 @@ async fn main() {
                 .expect("Unable to write data");
         } else {
             eprintln!("Failed to read current and best weights!!!");
+        }
+    } else if args[1] == "verify_weight" && args.len() == 3 {
+        // Standalone weight health check: the same probe `eval_with_winner` gates on, so a
+        // suspicious weight can be classified in about a second instead of an evaluation
+        // round. Exit code 1 means the probe failed, 2 means it could not run at all.
+        let weight_id: i32 = args[2].parse().expect("Parameter Error!!!");
+        let weights_dir = env::current_dir()
+            .expect("Unable to get current folder")
+            .join("weights");
+        match probe_weight(&weights_dir, weight_id, cfg::DEFAULT_INTRA_THREAD_NUM).await {
+            Ok(report) => {
+                print!("{}", report.summary());
+                if !report.passed() {
+                    std::process::exit(1);
+                }
+            }
+            Err(error) => {
+                eprintln!("weight probe could not run: {error}");
+                std::process::exit(2);
+            }
         }
     } else if args[1] == "eval_with_random" && args.len() == 3 {
         let mut current_weight_id = 0;

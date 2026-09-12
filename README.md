@@ -219,6 +219,45 @@ Command descriptions:
 - `generate <batch_id>`: load the current weight and generate self-play training data.
 - `eval_with_winner <games>`: evaluate the current weight against the best weight.
 - `eval_with_random <games>`: evaluate the current weight against a random MCTS opponent without a neural network.
+- `verify_weight <id>`: run the weight probe on `weights/<id>.onnx` and exit 1 if it fails.
+
+### Weight probe (`verify_weight`)
+
+A destroyed weight is not a rare accident: a training round on corrupt targets, a structure
+conversion whose distillation went wrong, or a stale ONNX companion file all produce a
+model that loads and plays while being no better than a random policy. Such a model loses
+every evaluation game, which is expensive to discover and easy to mistake for a real
+regression.
+
+The probe asks a weight three questions with **one forward pass per position** (about a
+second in total, no search):
+
+```
+$ train_and_eval verify_weight 1205
+weight probe: PASS (0.9s)
+  outputs            ok    6 position(s), |v| max 1.000
+  win in one         ok    3/3 shapes solved
+  block the four     ok    top1 156 p=0.833 (warn only)
+  value (winning)    ok    v=+1.000
+  value (losing)     ok    v=-1.000
+```
+
+- **win in one** (3 shapes): the side to move has exactly one immediate five; the raw
+  policy top-1 must be it. A uniform policy answers index 0 everywhere and solves none.
+- **block the four**: the opponent threatens five and the block is the only move that does
+  not lose at once. Advisory only -- a policy preferring a counter-threat is weak, not
+  broken, so this never rejects a candidate on its own.
+- **value signs**: a won position must evaluate positive and a lost one negative, and
+  decisively so (|v| >= 0.5), which catches a flat or inverted value head.
+- Every probe position is parity-correct (`b == w` on Black's turn, `b == w + 1` on White's
+  turn) with a harmless Black stone played last, and always White to move: White has no
+  forbidden moves under any supported rule, so the expected move is rule-agnostic.
+
+`eval_with_winner` runs the probe on the candidate automatically and **rejects the
+candidate before playing any games** when it fails; it also warns (without blocking) when
+best itself fails, because then every candidate trained from it will look broken. Set
+`EVAL_SKIP_VERIFY=1` to bypass the gate, e.g. to time an evaluation or to study a known-bad
+weight.
 
 ### Colour-paired evaluations
 
@@ -271,7 +310,8 @@ Use it to budget a session instead of guessing:
   before fixing a value.
 - Evaluating a weight against itself (`current == best`, which happens on a re-run right
   after a rollback) is skipped instead of burning a round and jittering the shared Elo
-  rating with search noise.
+  rating with search noise. `EVAL_ALLOW_SELF_MATCH=1` runs it anyway: a self-match is the
+  cheapest control that the harness is sound, because it must score ~0.5 at any budget.
 - A failed evaluation (missing or unloadable weight, a weight whose input channels do not
   match `INPUT_CHANNEL_SIZE`, or a game that could not be played) reports zero games,
   rejects the candidate and leaves best in place. The failure is contained in the worker,
