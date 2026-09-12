@@ -10,7 +10,7 @@ use crate::{
 
 use ort::{
     session::{self, RunOptions, Session, SessionOutputs},
-    value::TensorRef,
+    value::{TensorRef, ValueType},
 };
 
 use ndarray::Array;
@@ -40,6 +40,106 @@ pub struct NeuralNetwork {
     request_sender: tokio_mpsc::UnboundedSender<InferenceTask>,
 }
 
+/// The input layout this build feeds the model: `[batch, channels, rows, cols]`, with a
+/// dynamic batch dimension.
+pub fn expected_input_shape() -> [Option<i64>; 4] {
+    [
+        None,
+        Some(i64::from(cfg::INPUT_CHANNEL_SIZE)),
+        Some(i64::from(cfg::BOARD_SIZE)),
+        Some(i64::from(cfg::BOARD_SIZE)),
+    ]
+}
+
+/// Compare a model's declared input dimensions against the layout this build feeds.
+///
+/// `None` entries in `expected` are dimensions this build cannot pin down, and a negative
+/// declared dimension is dynamic, which is accepted as "cannot check" (ONNX Runtime will
+/// report it at run time). Returns `None` when the input is usable.
+fn shape_problem(dims: &[i64], expected: [Option<i64>; 4]) -> Option<String> {
+    if dims.len() != expected.len() {
+        return Some(format!(
+            "declares a {}-dimensional input {dims:?}, expected [batch, channels, rows, cols]",
+            dims.len()
+        ));
+    }
+    let mut mismatched = Vec::new();
+    for (index, (declared, wanted)) in dims.iter().zip(expected.iter()).enumerate() {
+        let Some(wanted) = wanted else {
+            continue;
+        };
+        if *declared >= 0 && declared != wanted {
+            mismatched.push(format!(
+                "{} {declared} vs {wanted}",
+                ["batch", "channels", "rows", "cols"][index]
+            ));
+        }
+    }
+    if mismatched.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "declares input {dims:?}, but this build feeds [batch, {}, {}, {}]: {}",
+            cfg::INPUT_CHANNEL_SIZE,
+            cfg::BOARD_SIZE,
+            cfg::BOARD_SIZE,
+            mismatched.join(", ")
+        ))
+    }
+}
+
+/// Describe a model's input layout, or explain why this build cannot feed it.
+///
+/// Checked at load time, at the single choke point every caller goes through, because the
+/// dimension error otherwise surfaces deep inside a search -- or, worse, not at all: a weight
+/// from another input layout loads happily and only shows up as a mysteriously weak player.
+///
+/// The check itself writes nothing: a rejected model only produces an `Err`, so the caller
+/// decides how to report it (the engine sends it to stderr, which the manager never reads as
+/// protocol input) and a usable model stays completely silent.
+fn check_model_input(session: &Session, model_path: &Path) -> Result<(), Box<dyn error::Error>> {
+    let dims: Vec<i64> = session
+        .inputs()
+        .first()
+        .and_then(|outlet| match outlet.dtype() {
+            ValueType::Tensor { shape, .. } => Some(shape.to_vec()),
+            _ => None,
+        })
+        .ok_or_else(|| no_tensor_input_error(model_path))?;
+
+    if let Some(problem) = shape_problem(&dims, expected_input_shape()) {
+        return Err(input_layout_error(model_path, &problem).into());
+    }
+    Ok(())
+}
+
+/// Error text for a model without a tensor input, protocol-safe like every other message.
+fn no_tensor_input_error(model_path: &Path) -> String {
+    single_line(&format!("{} has no tensor input", model_path.display()))
+}
+
+/// Error text for a model whose input layout this build cannot feed.
+///
+/// Kept to exactly one line by construction: it is printed while a command is being handled
+/// (`START`, `INFO rule`), and a stray newline would look like a second protocol reply to the
+/// manager. Sanitising here rather than at each caller means no caller can break that.
+fn input_layout_error(model_path: &Path, problem: &str) -> String {
+    single_line(&format!(
+        "{} {}; a weight from another input layout cannot be used, so retrain it with the \
+         current train/neural_network.py or run a binary that matches it",
+        model_path.display(),
+        problem
+    ))
+}
+
+/// Collapse any control character (newlines, carriage returns, tabs, ...) into a space, so
+/// the text occupies exactly one line and cannot inject a protocol reply.
+fn single_line(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
+}
+
 impl NeuralNetwork {
     pub fn new(
         model_path: &Path,
@@ -59,6 +159,7 @@ impl NeuralNetwork {
             .with_intra_threads(intra_threads as usize)?
             .with_inter_threads(1)?
             .commit_from_file(model_path)?;
+        check_model_input(&session, model_path)?;
         let input_names: Vec<String> = session
             .inputs()
             .iter()
@@ -515,5 +616,67 @@ mod tests {
         assert!(tensor[2 * plane..3 * plane].iter().all(|&x| x == 0.0));
         // color channel is still present and constant
         assert!(tensor[3 * plane..4 * plane].iter().all(|&x| x == -1.0));
+    }
+
+    #[test]
+    fn this_builds_own_shape_is_accepted() {
+        let expected = expected_input_shape();
+        assert!(shape_problem(&[-1, 4, 15, 15], expected).is_none());
+        // a fixed batch dimension is fine too: it only has to exist
+        assert!(shape_problem(&[1, 4, 15, 15], expected).is_none());
+    }
+
+    #[test]
+    fn another_channel_count_is_rejected() {
+        // the 3-channel era: every one of those weights must fail here, not mid-search
+        let problem = shape_problem(&[-1, 3, 15, 15], expected_input_shape())
+            .expect("3-channel input must be rejected");
+        assert!(problem.contains("channels 3 vs 4"), "{problem}");
+    }
+
+    #[test]
+    fn another_board_size_is_rejected() {
+        let problem = shape_problem(&[-1, 4, 9, 9], expected_input_shape())
+            .expect("9x9 input must be rejected");
+        assert!(problem.contains("rows 9 vs 15"), "{problem}");
+        assert!(problem.contains("cols 9 vs 15"), "{problem}");
+    }
+
+    #[test]
+    fn a_dynamic_dimension_cannot_be_checked() {
+        // nothing to compare against: ONNX Runtime will complain at run time if it matters
+        assert!(shape_problem(&[-1, -1, 15, 15], expected_input_shape()).is_none());
+    }
+
+    #[test]
+    fn a_different_rank_is_rejected() {
+        let problem = shape_problem(&[4, 15, 15], expected_input_shape())
+            .expect("a 3-dimensional input must be rejected");
+        assert!(problem.contains("3-dimensional"), "{problem}");
+    }
+
+    #[test]
+    fn the_layout_error_is_always_a_single_line() {
+        // a path or a message with embedded control characters must not be able to look like
+        // a second protocol reply during START / INFO rule
+        let path = Path::new("/weights/odd\nname\r.onnx");
+        let message = input_layout_error(path, "declares input [3, 15, 15]\nOK");
+        assert!(!message.contains('\n'), "{message}");
+        assert!(!message.contains('\r'), "{message}");
+        assert!(!message.chars().any(char::is_control), "{message}");
+        assert!(message.contains("channels") || message.contains("declares input"));
+        assert_eq!(message.lines().count(), 1, "{message}");
+        assert_eq!(
+            no_tensor_input_error(Path::new("a\tb")).lines().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn single_line_only_folds_control_characters() {
+        // ordinary text (including the shape brackets and colons of the real message) is kept
+        assert_eq!(single_line("input [-1, 3, 15, 15]: channels 3 vs 4"),
+                   "input [-1, 3, 15, 15]: channels 3 vs 4");
+        assert_eq!(single_line("a\nb\rc\td"), "a b c d");
     }
 }
