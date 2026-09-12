@@ -222,6 +222,50 @@ pub struct ProbeMeasurement {
     pub value: f64,
 }
 
+/// How much a network reacts to the constant colour plane (channel 3) being flipped.
+///
+/// Channel 3 carries the absolute side-to-move colour, which on every reachable position is
+/// already a function of the two stone planes: this engine never passes (a forbidden Black
+/// move ends the game instead), so Black to move implies equal stone counts and White to move
+/// implies Black is one stone ahead. The plane is therefore informationally redundant -- for
+/// Renju as well -- and this measurement says whether a trained network *uses* it anyway:
+/// a value near zero means the plane is ignored, a large value means the network leans on it
+/// (which is the learnability the plane was added for, at the cost of a real input).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColourPlaneSensitivity {
+    pub max_value_shift: f64,
+    pub max_prob_shift: f64,
+}
+
+impl ColourPlaneSensitivity {
+    /// Whether the network is indifferent to the plane (numeric noise only).
+    pub fn is_ignored(&self) -> bool {
+        self.max_value_shift < 0.01 && self.max_prob_shift < 0.01
+    }
+}
+
+/// Measure the flip of channel 3 over the probe set.
+pub fn colour_plane_sensitivity(
+    measurements: &[ProbeMeasurement],
+    flipped: &[ProbeMeasurement],
+) -> ColourPlaneSensitivity {
+    let mut max_value_shift: f64 = 0.0;
+    let mut max_prob_shift: f64 = 0.0;
+    for (normal, other) in measurements.iter().zip(flipped.iter()) {
+        max_value_shift = max_value_shift.max((normal.value - other.value).abs());
+        // policy agreement: 1 - sum(min(p_a, p_b)) would need the full vectors, so compare
+        // the top-1 probability and whether the argmax moved
+        max_prob_shift = max_prob_shift.max((normal.top1_prob - other.top1_prob).abs());
+        if normal.top1 != other.top1 {
+            max_prob_shift = max_prob_shift.max(normal.top1_prob);
+        }
+    }
+    ColourPlaneSensitivity {
+        max_value_shift,
+        max_prob_shift,
+    }
+}
+
 /// One pass/fail line of the report.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Criterion {
@@ -275,7 +319,7 @@ impl ProbeReport {
                 criterion.name,
                 if criterion.passed { "ok" } else { "FAIL" },
                 criterion.detail,
-                if criterion.critical { "" } else { " (warn only)" }
+                if criterion.critical { "" } else { " (advisory)" }
             ));
         }
         text
@@ -455,6 +499,7 @@ pub async fn probe_weight(
     let started = Instant::now();
     let measurements = probe_positions(cfg::BOARD_SIZE, cfg::N_IN_ROW);
     let mut results = Vec::with_capacity(measurements.len());
+    let mut flipped_results = Vec::with_capacity(measurements.len());
     for probe in measurements {
         let mut game = Gomoku::new(cfg::BOARD_SIZE, cfg::N_IN_ROW)
             .ok_or_else(|| "board configuration rejected".to_string())?;
@@ -464,34 +509,85 @@ pub async fn probe_weight(
         if game.get_game_status().0 != GameStage::Running {
             return Err(format!("probe {} is already decided", probe.name));
         }
+        let (probs, value) = infer(&network, &game, probe.name).await?;
+        results.push(measurement_for(&probe, &probs, value));
 
-        let receiver = network
-            .commit(&game)
-            .map_err(|error| format!("probe {} could not be queued: {error}", probe.name))?;
-        let (probs, value) = receiver
-            .await
-            .map_err(|error| format!("probe {} inference dropped: {error}", probe.name))?
-            .map_err(|error| format!("probe {} inference failed: {error}", probe.name))?;
-
-        let (top1, top1_prob) = probs
-            .iter()
-            .enumerate()
-            .fold((0usize, f64::NEG_INFINITY), |best, (index, prob)| {
-                if *prob > best.1 { (index, *prob) } else { best }
-            });
-        results.push(ProbeMeasurement {
-            name: probe.name,
-            kind: probe.kind,
-            critical: probe.critical,
-            expected: probe.expected,
-            top1: top1 as u16,
-            top1_prob,
-            prob_sum: probs.iter().sum(),
-            value,
-        });
+        // same position with the constant colour plane negated: on every reachable position
+        // that plane is already implied by the stone planes, so a network that has really
+        // learned the game has no reason to move its answer
+        if cfg::INPUT_CHANNEL_SIZE >= 4 {
+            let mut state = network.transform_gomoku_2_tensor(&game);
+            let plane = game.get_board_size() as usize * game.get_board_size() as usize;
+            for value in state[3 * plane..4 * plane].iter_mut() {
+                *value = -*value;
+            }
+            let receiver = network
+                .commit_state(state)
+                .map_err(|error| format!("probe {} could not be queued: {error}", probe.name))?;
+            let (probs, value) = receiver
+                .await
+                .map_err(|error| format!("probe {} inference dropped: {error}", probe.name))?
+                .map_err(|error| format!("probe {} inference failed: {error}", probe.name))?;
+            flipped_results.push(measurement_for(&probe, &probs, value));
+        }
     }
 
-    Ok(score_probes(&results, started.elapsed()))
+    let mut report = score_probes(&results, started.elapsed());
+    if !flipped_results.is_empty() {
+        let sensitivity = colour_plane_sensitivity(&results, &flipped_results);
+        report.criteria.push(Criterion {
+            name: "colour plane".to_string(),
+            // informational: it describes the network, it does not judge it
+            critical: false,
+            passed: true,
+            detail: format!(
+                "flipping ch3 shifts value by {:.3} and policy top-1 by {:.3} -- {}",
+                sensitivity.max_value_shift,
+                sensitivity.max_prob_shift,
+                if sensitivity.is_ignored() {
+                    "ignored, so the plane is redundant here"
+                } else {
+                    "used by the network"
+                }
+            ),
+        });
+    }
+    Ok(report)
+}
+
+/// Run one forward pass for a probe position.
+async fn infer(
+    network: &NeuralNetwork,
+    game: &Gomoku,
+    name: &str,
+) -> Result<(Vec<f64>, f64), String> {
+    let receiver = network
+        .commit(game)
+        .map_err(|error| format!("probe {name} could not be queued: {error}"))?;
+    receiver
+        .await
+        .map_err(|error| format!("probe {name} inference dropped: {error}"))?
+        .map_err(|error| format!("probe {name} inference failed: {error}"))
+}
+
+/// Fold one pass into a measurement.
+fn measurement_for(probe: &ProbePosition, probs: &[f64], value: f64) -> ProbeMeasurement {
+    let (top1, top1_prob) = probs
+        .iter()
+        .enumerate()
+        .fold((0usize, f64::NEG_INFINITY), |best, (index, prob)| {
+            if *prob > best.1 { (index, *prob) } else { best }
+        });
+    ProbeMeasurement {
+        name: probe.name,
+        kind: probe.kind,
+        critical: probe.critical,
+        expected: probe.expected,
+        top1: top1 as u16,
+        top1_prob,
+        prob_sum: probs.iter().sum(),
+        value,
+    }
 }
 
 #[cfg(test)]
@@ -765,6 +861,57 @@ mod tests {
         let report = score_probes(&broken, Duration::ZERO);
         assert!(!report.passed());
         assert_eq!(report.failures()[0].name, "outputs");
+    }
+
+    #[test]
+    fn the_colour_plane_flip_only_touches_channel_three() {
+        let probe = probe_positions(BOARD, ROW)
+            .into_iter()
+            .next()
+            .expect("a probe exists");
+        let game = game_from(&probe, Color::White);
+        let state = NeuralNetwork::transform_board_2_tensor(
+            game.get_board(),
+            game.get_board_size(),
+            game.get_last_move(),
+            game.get_cur_color(),
+        );
+        let plane = BOARD as usize * BOARD as usize;
+        assert_eq!(state.len(), 4 * plane, "this build feeds four channels");
+        // White to move: the constant plane carries -1 everywhere
+        assert!(state[3 * plane..].iter().all(|value| *value == -1.0));
+        assert!(
+            state[..3 * plane]
+                .iter()
+                .any(|value| *value != 0.0),
+            "the stone planes must be populated for the flip to be measurable"
+        );
+
+        let mut flipped = state.clone();
+        for value in flipped[3 * plane..].iter_mut() {
+            *value = -*value;
+        }
+        assert!(flipped[3 * plane..].iter().all(|value| *value == 1.0));
+        assert_eq!(state[..3 * plane], flipped[..3 * plane], "only ch3 may change");
+        assert_ne!(state, flipped);
+    }
+
+    #[test]
+    fn colour_plane_sensitivity_reports_the_largest_shift() {
+        let normal = healthy();
+        let mut flipped = normal.clone();
+        // the network leans on the plane: value moves and the argmax changes
+        flipped[0].value += 0.4;
+        flipped[1].top1 = 123;
+        let sensitivity = colour_plane_sensitivity(&normal, &flipped);
+        assert!((sensitivity.max_value_shift - 0.4).abs() < 1e-12);
+        assert!(sensitivity.max_prob_shift >= normal[1].top1_prob);
+        assert!(!sensitivity.is_ignored());
+
+        // and indifference is the other extreme
+        let same = colour_plane_sensitivity(&normal, &normal);
+        assert!(same.is_ignored());
+        assert_eq!(same.max_value_shift, 0.0);
     }
 
     #[test]

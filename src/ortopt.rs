@@ -184,7 +184,14 @@ impl NeuralNetwork {
     }
 
     pub fn commit(&self, gomoku: &Gomoku) -> Result<oneshot::Receiver<InferenceOutput>, String> {
-        let state = self.transform_gomoku_2_tensor(gomoku);
+        self.commit_state(self.transform_gomoku_2_tensor(gomoku))
+    }
+
+    /// Queue an inference request for an already encoded state.
+    ///
+    /// Used by the weight probe to feed a deliberately perturbed state (for example with
+    /// the constant colour plane flipped) and measure how much the network reacts to it.
+    pub fn commit_state(&self, state: Vec<f32>) -> Result<oneshot::Receiver<InferenceOutput>, String> {
         let (response_sender, response_receiver) = oneshot::channel();
         self.request_sender
             .send(InferenceTask {

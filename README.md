@@ -240,9 +240,10 @@ $ train_and_eval verify_weight 1205
 weight probe: PASS (0.9s, policy sharpness 0.772)
   outputs            ok    6 position(s), |v| max 1.000
   win in one         ok    3/3 solved: horizontal gap p=1.000, vertical gap p=0.998, diagonal gap p=0.999
-  block the four     ok    top1 156 p=0.833 (warn only)
+  block the four     ok    top1 156 p=0.833 (advisory)
   value (winning)    ok    v=+1.000
   value (losing)     ok    v=-1.000
+  colour plane       ok    flipping ch3 shifts value by 0.000 and policy top-1 by 0.000 -- ignored, so the plane is redundant here (advisory)
 ```
 
 - **win in one** (3 shapes): the side to move has exactly one immediate five; the raw
@@ -252,6 +253,14 @@ weight probe: PASS (0.9s, policy sharpness 0.772)
   broken, so this never rejects a candidate on its own.
 - **value signs**: a won position must evaluate positive and a lost one negative, and
   decisively so (|v| >= 0.5), which catches a flat or inverted value head.
+- **colour plane** (advisory): every probe is also run with channel 3 negated. That channel
+  carries the absolute side-to-move colour, which on every reachable position is already a
+  function of the two stone planes -- this engine never passes (a forbidden Black move ends
+  the game rather than skipping the turn), so Black to move implies equal stone counts and
+  White to move implies Black is one stone ahead. The plane is therefore informationally
+  redundant, Renju included, and this line measures whether the network leans on it anyway:
+  a measured FreeStyle model ignores it completely (shift 0.000), while a Renju model would
+  be expected to use it as a shortcut for "am I Black". It is a report line, never a failure.
 - **policy sharpness** (the number in the headline) is the mean top-1 probability over the
   probes. It is the one figure that separates "weak" from "destroyed": a destroyed weight
   returns the uniform 1/225, while a merely weaker weight keeps its tactics with visibly
