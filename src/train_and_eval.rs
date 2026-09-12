@@ -268,9 +268,14 @@ pub struct EvalOutcome {
     pub b_win: u16,
     pub draw: u16,
     pub pair_scores: Vec<f64>,
-    /// Wall-clock spent playing the games, model loading excluded. This is the number
-    /// to budget an evaluation with, together with [`EvalOutcome::seconds_per_pair`].
+    /// Wall-clock of the whole evaluation (session creation included). Budget with this:
+    /// unlike the games it does not scale with the game count, so it is worth pinning
+    /// down separately from the per-pair rate.
     pub elapsed: Duration,
+    /// Wall-clock spent creating the ONNX sessions (the slowest worker). A large value
+    /// here is a cold runtime or a heavy weight file, not an expensive search — this is
+    /// what a logging-only view of the total would hide.
+    pub load_elapsed: Duration,
     /// Whether every scheduled game produced a result. A failed evaluation reports
     /// zero games and must never be read as a score for net A.
     pub complete: bool,
@@ -284,6 +289,7 @@ impl Default for EvalOutcome {
             draw: 0,
             pair_scores: Vec::new(),
             elapsed: Duration::ZERO,
+            load_elapsed: Duration::ZERO,
             complete: false,
         }
     }
@@ -317,14 +323,28 @@ impl EvalOutcome {
         (wins, losses, ties)
     }
 
-    /// Mean wall-clock seconds per colour-swapped pair: the unit to budget an
-    /// evaluation in. With parallel workers this is the parallel rate, which is what
-    /// matters for planning a Colab session.
+    /// Wall-clock actually spent playing, i.e. the total minus session creation.
+    pub fn games_elapsed(&self) -> Duration {
+        self.elapsed.saturating_sub(self.load_elapsed)
+    }
+
+    /// Mean wall-clock seconds per colour-swapped pair over the whole evaluation: the
+    /// unit to budget an evaluation in. Session creation is per-process, so it weighs
+    /// less per pair as the game count grows.
     pub fn seconds_per_pair(&self) -> f64 {
         if self.pair_scores.is_empty() {
             return 0.0;
         }
         self.elapsed.as_secs_f64() / self.pair_scores.len() as f64
+    }
+
+    /// Mean wall-clock seconds per pair of actual play, which is the rate that scales
+    /// with the game count when sizing a screen.
+    pub fn games_seconds_per_pair(&self) -> f64 {
+        if self.pair_scores.is_empty() {
+            return 0.0;
+        }
+        self.games_elapsed().as_secs_f64() / self.pair_scores.len() as f64
     }
 }
 
@@ -384,7 +404,8 @@ fn load_eval_model(
     }
 }
 
-/// Play the assigned games inside one worker thread.
+/// Play the assigned games inside one worker thread, reporting how long its own ONNX
+/// session creation took.
 ///
 /// Each worker builds its own current-thread runtime and owns its ONNX sessions, so
 /// nothing `Rc`-based crosses a thread boundary. Games are independent, so the merged
@@ -400,9 +421,13 @@ fn worker_eval_games(
     num_mcts_sim_b: u16,
     do_render: bool,
     intra_thread_num: u8,
-) -> Result<Vec<GameResult>, String> {
+) -> Result<(Vec<GameResult>, Duration), String> {
+    // session creation is reported separately: a cold runtime or a heavy weight shows up
+    // here, and lumping it into the game time would hide it
+    let load_started = Instant::now();
     let model_a = load_eval_model(weights_dir, weight_a_id, intra_thread_num)?;
     let model_b = load_eval_model(weights_dir, weight_b_id, intra_thread_num)?;
+    let load_elapsed = load_started.elapsed();
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -438,7 +463,7 @@ fn worker_eval_games(
             });
         }
     }
-    Ok(results)
+    Ok((results, load_elapsed))
 }
 
 /// How many games to play concurrently (`EVAL_WORKERS`, default 2).
@@ -453,7 +478,9 @@ fn eval_workers() -> usize {
         .unwrap_or(2)
 }
 
-/// Gather the game results reported by the workers, in game order.
+/// Gather the game results reported by the workers, in game order, together with the
+/// slowest worker's session-creation time (workers load in parallel, so the maximum —
+/// not the sum — is the wall-clock they added).
 async fn collect_eval_games(
     weights_dir: &Path,
     weight_a_id: i32,
@@ -462,7 +489,7 @@ async fn collect_eval_games(
     num_mcts_sim_a: u16,
     num_mcts_sim_b: u16,
     workers: usize,
-) -> Result<Vec<GameResult>, String> {
+) -> Result<(Vec<GameResult>, Duration), String> {
     // fair share of the CPU threads when several workers run at once, mirroring the
     // self-play generator; never below two so a single session is not left single-threaded
     let intra_thread_num = ((cfg::DEFAULT_INTRA_THREAD_NUM as usize) / workers).max(2) as u8;
@@ -501,15 +528,19 @@ async fn collect_eval_games(
     }
 
     let mut results = Vec::with_capacity(games.len());
+    let mut load_elapsed = Duration::ZERO;
     for handle in handles {
         match handle.await {
-            Ok(Ok(mut worker_results)) => results.append(&mut worker_results),
+            Ok(Ok((mut worker_results, worker_load))) => {
+                results.append(&mut worker_results);
+                load_elapsed = load_elapsed.max(worker_load);
+            }
             Ok(Err(error)) => return Err(error),
             Err(error) => return Err(format!("evaluation worker panicked: {error}")),
         }
     }
     results.sort_by_key(|result| result.index);
-    Ok(results)
+    Ok((results, load_elapsed))
 }
 
 /// Play the scheduled games and fold them into an [`EvalOutcome`].
@@ -526,7 +557,7 @@ async fn run_eval_games(
 ) -> EvalOutcome {
     let started = Instant::now();
     let workers = eval_workers().min(games.len().max(1));
-    let results = match collect_eval_games(
+    let (results, load_elapsed) = match collect_eval_games(
         weights_dir,
         weight_a_id,
         weight_b_id,
@@ -537,7 +568,7 @@ async fn run_eval_games(
     )
     .await
     {
-        Ok(results) => results,
+        Ok(collected) => collected,
         Err(error) => {
             // never report a partial evaluation as a score for net A
             eprintln!("Evaluation failed, treating it as no result: {error}");
@@ -547,6 +578,7 @@ async fn run_eval_games(
 
     let mut outcome = EvalOutcome {
         elapsed: started.elapsed(),
+        load_elapsed,
         ..EvalOutcome::default()
     };
     let mut game_scores = Vec::with_capacity(results.len());
@@ -790,6 +822,31 @@ async fn main() {
                 current_weight, best_weight
             );
 
+            if current_weight >= 0 && current_weight == best_weight {
+                // Current and best are the same weight (a re-run right after a rollback, or
+                // a round that was accepted without training in between). Playing it against
+                // itself would burn a round, report a meaningless result out of search
+                // noise, and jitter the single shared Elo rating.
+                let message = format!(
+                    "current weight {current_weight} == best weight {best_weight}: \
+                     nothing to evaluate, best kept\n"
+                );
+                println!("{}", message.trim_end());
+                fs::write(
+                    "current_and_best_weight.txt",
+                    best_weight.to_string() + " " + &best_weight.to_string(),
+                )
+                .expect("Unable to write file");
+                fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open("eval_result.log")
+                    .expect("Unable to open file")
+                    .write_all(message.as_bytes())
+                    .expect("Unable to write data");
+                return;
+            }
+
             let game_num: u16 = args[2].parse().expect("Parameter Error!!!");
             let (sims, sims_source) = eval_sims_for(current_weight.max(0) as u16);
             println!("Eval sims: {} per move ({})", sims, sims_source);
@@ -800,7 +857,6 @@ async fn main() {
                 cfg::BOARD_SIZE,
                 cfg::N_IN_ROW,
             );
-            let eval_started = Instant::now();
             let result = eval(
                 current_weight,
                 best_weight,
@@ -810,7 +866,6 @@ async fn main() {
                 &book,
             )
             .await;
-            let eval_wall = eval_started.elapsed();
 
             let mut result_log_info = current_weight.to_string()
                 + "-th weight win: "
@@ -853,16 +908,20 @@ async fn main() {
                     p_value
                 );
             }
-            // wall-clock accounting: the number to budget a Colab session with. The
-            // per-pair rate is the parallel rate when EVAL_WORKERS > 1.
+            // wall-clock accounting: the number to budget a Colab session with. Session
+            // creation is per-process, so it is reported apart from the play rate that
+            // scales with the game count.
             let cost_info = format!(
-                "eval cost: {} pairs / {} games, games {:.1}s ({:.1}s per pair), \
-                 total {:.1}s including model load, {:.0} sims/move ({}), {} worker(s)\n",
+                "eval cost: {} pairs / {} games, load {:.1}s + games {:.1}s = {:.1}s, \
+                 {:.1}s per pair total / {:.1}s per pair of play, {:.0} sims/move ({}), \
+                 {} worker(s)\n",
                 result.pair_scores.len(),
                 result.a_win + result.b_win + result.draw,
+                result.load_elapsed.as_secs_f64(),
+                result.games_elapsed().as_secs_f64(),
                 result.elapsed.as_secs_f64(),
                 result.seconds_per_pair(),
-                eval_wall.as_secs_f64(),
+                result.games_seconds_per_pair(),
                 sims,
                 sims_source,
                 eval_workers(),
@@ -936,7 +995,6 @@ async fn main() {
             let num_mcts_sim_a: u16 = sims;
             let num_mcts_sim_b: u16 = num_random_mcts_sim as u16;
             // the random opponent is not a weight, so no opening book is meaningful here
-            let eval_started = Instant::now();
             let result = eval(
                 current_weight_id,
                 -1,
@@ -946,7 +1004,6 @@ async fn main() {
                 &[],
             )
             .await;
-            let eval_wall = eval_started.elapsed();
 
             let mut result_log_info = current_weight_id.to_string()
                 + "-th weight with mcts ["
@@ -969,11 +1026,12 @@ async fn main() {
             // wall-clock accounting, same as eval_with_winner (no pair statistic here:
             // the random anchor is not a colour-paired weight)
             let cost_info = format!(
-                "eval cost: {} games, games {:.1}s, total {:.1}s including model load, \
+                "eval cost: {} games, load {:.1}s + games {:.1}s = {:.1}s, \
                  {} sims/move ({}), {} worker(s)\n",
                 result.a_win + result.b_win + result.draw,
+                result.load_elapsed.as_secs_f64(),
+                result.games_elapsed().as_secs_f64(),
                 result.elapsed.as_secs_f64(),
-                eval_wall.as_secs_f64(),
                 sims,
                 sims_source,
                 eval_workers(),
@@ -1130,10 +1188,15 @@ mod tests {
             draw: 0,
             pair_scores: vec![0.5, 0.5],
             elapsed: Duration::from_secs_f64(120.0),
+            load_elapsed: Duration::from_secs_f64(0.5),
             complete: true,
         };
         // the unit to budget an evaluation in: wall-clock per colour-swapped pair
         assert!((outcome.seconds_per_pair() - 60.0).abs() < 1e-9);
+        // session creation is per-process, so the play rate is reported apart from it:
+        // this is the rate that scales when a screen adds more pairs
+        assert!((outcome.games_elapsed().as_secs_f64() - 119.5).abs() < 1e-9);
+        assert!((outcome.games_seconds_per_pair() - 59.75).abs() < 1e-9);
     }
 
     #[test]
