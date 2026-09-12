@@ -28,10 +28,15 @@ def parse_batch_id(file_name):
     return None
 
 
-def select_replay_files(data_dir, backup_dir, window_files):
+def select_replay_files(data_dir, backup_dir, window_files, archive_dir=None):
     """Collect data files from data/ and data_backup/, sort by (mtime, batch_id)
        descending, and take the newest window_files as the replay window
        returns (selected, obsolete) file path lists
+
+       `archive_dir` is only consulted when data/ + data_backup/ cannot fill the window
+       (a fresh or restored work dir): the self-play samples are independent of the model
+       that generated them, so month-old archived games are still usable training data,
+       and training on a starved window is what quietly flattens a policy.
     """
     candidates = []
     for folder in (data_dir, backup_dir):
@@ -52,6 +57,26 @@ def select_replay_files(data_dir, backup_dir, window_files):
         reverse=True,
     )
     selected = [item[2] for item in candidates[:window_files]]
+
+    if len(selected) < window_files and archive_dir and path.isdir(archive_dir):
+        archived = []
+        for file_name in os.listdir(archive_dir):
+            file_path = path.join(archive_dir, file_name)
+            if not path.isfile(file_path):
+                continue
+            try:
+                mtime = os.path.getmtime(file_path)
+            except OSError:
+                mtime = 0.0
+            archived.append((mtime, parse_batch_id(file_name), file_path))
+        archived.sort(
+            key=lambda item: (item[0], item[1] if item[1] is not None else -1),
+            reverse=True,
+        )
+        # the archived files are all older than the live window, so the fallback keeps the
+        # live/new ordering at the head of the list
+        selected.extend(item[2] for item in archived[:window_files - len(selected)])
+
     obsolete = [item[2] for item in candidates[window_files:]]
     return selected, obsolete
 
@@ -95,10 +120,25 @@ class Learner():
         data_backup_path = path.join(path.dirname(data_path), 'data_backup')
         data_archive_path = path.join(path.dirname(data_path), 'data_archive')
         window_files = config['examples_buffer_max_len'] * config['games_per_iter']
-        replay_files, _ = select_replay_files(data_path, data_backup_path, window_files)
+        # A starved replay window is the failure mode that quietly flattens a policy: with
+        # few samples the value head still converges (and still passes a tactical probe)
+        # while the policy never sharpens. Fall back to data_archive/ and say so loudly.
+        include_archive = os.environ.get('REPLAY_INCLUDE_ARCHIVE', '') not in ('', '0')
+        replay_files, _ = select_replay_files(
+            data_path, data_backup_path, window_files,
+            archive_dir=data_archive_path if include_archive else None,
+        )
+        archive_used = sum(1 for file_path in replay_files
+                           if path.dirname(file_path) == data_archive_path)
         print(f"replay window: {config['examples_buffer_max_len']} iters x "
               f"{config['games_per_iter']} games = {window_files} files, "
-              f"selected {len(replay_files)}")
+              f"selected {len(replay_files)}"
+              + (f" ({archive_used} filled from data_archive/)" if archive_used else ""))
+        if len(replay_files) < window_files:
+            print(f"WARNING: the replay window is short by {window_files - len(replay_files)} "
+                  f"file(s) ({len(replay_files)}/{window_files}). Training will barely move "
+                  f"the model, which shows up as a flat policy; set REPLAY_INCLUDE_ARCHIVE=1 "
+                  f"to fill it from {data_archive_path}.")
         train_data = self.load_samples(replay_files)
         if not train_data:
             raise RuntimeError("no valid training samples found in the replay window")
@@ -106,6 +146,8 @@ class Learner():
 
         # train neural network
         epochs = self.epochs * (len(train_data) + self.batch_size - 1) // self.batch_size
+        print(f"training: {len(train_data)} samples, batch {min(self.batch_size, len(train_data))}"
+              f", {epochs} steps ({epochs * min(self.batch_size, len(train_data))} sample draws)")
         self.nnet.train(train_data, min(self.batch_size, len(train_data)), epochs)
 
         model_path = path.join(model_dir, str(model_id+1))

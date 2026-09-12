@@ -852,6 +852,38 @@ async fn main() {
                     "Generating... best_weight = {} current_weight = {} start batch id: {}",
                     best_weight, cur_weight, start_batch_id
                 );
+                // A best weight that cannot run produces no data at all, and the round then
+                // fails later inside the learner with a confusing "no valid training
+                // samples"; check what actually happened first. The probe also catches a
+                // weight from a different input-channel era, which is otherwise only
+                // visible as an inference error in the middle of a game.
+                if !skip_verify() {
+                    let weights_dir = env::current_dir()
+                        .expect("Unable to get current folder")
+                        .join("weights");
+                    match probe_weight(&weights_dir, best_weight as i32, cfg::DEFAULT_INTRA_THREAD_NUM)
+                        .await
+                    {
+                        Ok(report) if report.passed() => {
+                            println!("best {best_weight} {}", report.headline());
+                        }
+                        Ok(report) => {
+                            eprintln!(
+                                "Refusing to generate: best weight {best_weight} fails the \
+                                 weight probe (EVAL_SKIP_VERIFY=1 to generate anyway)\n{}",
+                                report.summary()
+                            );
+                            return;
+                        }
+                        Err(error) => {
+                            eprintln!(
+                                "Refusing to generate: best weight {best_weight} cannot be used: \
+                                 {error}\n(EVAL_SKIP_VERIFY=1 to generate anyway)"
+                            );
+                            return;
+                        }
+                    }
+                }
                 generate_data_for_train(best_weight as u16, start_batch_id).await;
             }
         } else {
@@ -904,14 +936,14 @@ async fn main() {
             // policy and would lose every game, which is expensive to discover and easy to
             // mistake for a real regression. The probe costs about a second.
             if !skip_verify() {
-                let (report_text, rejection) =
+                let (report_text, rejection, candidate_sharpness) =
                     match probe_weight(&weights_dir, current_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
                         .await
                     {
                         Ok(report) => {
                             let text = report.summary();
                             if report.passed() {
-                                (text, None)
+                                (text, None, Some(report.sharpness))
                             } else {
                                 let failed: Vec<String> = report
                                     .failures()
@@ -924,6 +956,7 @@ async fn main() {
                                         "weight probe failed: {} (EVAL_SKIP_VERIFY=1 to evaluate anyway)",
                                         failed.join(", ")
                                     )),
+                                    None,
                                 )
                             }
                         }
@@ -931,6 +964,7 @@ async fn main() {
                         Err(error) => (
                             format!("weight probe could not run: {error}\n"),
                             Some(error),
+                            None,
                         ),
                     };
                 print!("{report_text}");
@@ -951,11 +985,25 @@ async fn main() {
                         probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
                             .await
                 {
-                    println!(
-                        "best {} {}",
-                        best_weight,
-                        best_report.headline()
-                    );
+                    println!("best {} {}", best_weight, best_report.headline());
+                    // policy sharpness is a proxy, not a verdict: a candidate that is far
+                    // flatter than best usually trained on too little data, which the learner
+                    // now also reports explicitly. Worth surfacing here because the symptom
+                    // (losing every game at a low simulation budget) looks like a regression.
+                    if let Some(sharpness) = candidate_sharpness
+                        && best_report.sharpness > 0.0
+                    {
+                        let ratio = sharpness / best_report.sharpness;
+                        let note = if ratio < 0.6 {
+                            " <- much flatter than best: check the learner's replay window"
+                        } else {
+                            ""
+                        };
+                        println!(
+                            "policy sharpness: candidate {:.3} vs best {:.3} (ratio {:.2}){}",
+                            sharpness, best_report.sharpness, ratio, note
+                        );
+                    }
                     if !best_report.passed() {
                         let warning = format!(
                             "WARNING: best weight {best_weight} also fails the probe; every \

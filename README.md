@@ -264,9 +264,17 @@ weight probe: PASS (0.9s, policy sharpness 0.772)
 
 `eval_with_winner` runs the probe on the candidate automatically and **rejects the
 candidate before playing any games** when it fails; it also probes best and prints its
-headline every round, so the candidate's sharpness can be read against the incumbent's. Set
-`EVAL_SKIP_VERIFY=1` to bypass the gate, e.g. to time an evaluation or to study a known-bad
-weight.
+headline every round, plus the sharpness ratio, so a candidate that is far flatter than
+best is visible immediately:
+
+```
+policy sharpness: candidate 0.239 vs best 0.805 (ratio 0.30) <- much flatter than best: check the learner's replay window
+```
+
+Set `EVAL_SKIP_VERIFY=1` to bypass the gate, e.g. to study a known-bad weight or to time an
+evaluation. `generate` runs the same check on best first: a best weight that cannot run
+produces no data at all, and refusing early beats failing later inside the learner with a
+confusing "no valid training samples".
 
 Note that a 128-sim screen is shallow (only 8 inference batches per move), so it punishes a
 diffuse policy harder than a real game would: a candidate that passes the probe but scores
@@ -331,11 +339,57 @@ Use it to budget a session instead of guessing:
   rejects the candidate and leaves best in place. The failure is contained in the worker,
   so a bad weight no longer kills the process mid-run.
 
+### Running the loop
+
+`train/train_loop.sh` runs generate -> train -> acceptance evaluation in a loop and now
+carries the recommended defaults, so it is run as-is:
+
+```bash
+cd train && ./train_loop.sh
+```
+
+| variable | default | meaning |
+|---|---|---|
+| `WORK_DIR` | `build` | work dir holding the binary, `data*/` and `weights/` |
+| `NUM_CONTEST` | `50` | evaluation games (even = complete colour-swapped pairs) |
+| `CHECK_FREQ` | `1` | evaluate every round; `>1` accepts the candidate without playing |
+| `EVAL_SIMS` | `256` | simulations per move during evaluation |
+| `EVAL_WORKERS` | `2` | games played concurrently during evaluation |
+| `REPLAY_INCLUDE_ARCHIVE` | `1` | let a short replay window fall back to `data_archive/` |
+| `BATCH_ID` / `STEP` | `0` / `16` | batch id start and per-round step (`STEP` = `NUM_2_SELF_PLAY`) |
+| `MAX_ITERS` | `1000` | rounds to run |
+
+Every value is still overridable from the shell, e.g. `EVAL_SIMS=384 ./train_loop.sh`.
+A round costs roughly 85s of evaluation play plus ~2s of weight probing at the defaults, on
+top of the self-play and training time; lower `EVAL_SIMS` (128) to make it cheaper, raise it
+(384) when a candidate's loss has to be trusted as a real strength gap. Diagnostic switches
+(`EVAL_SKIP_VERIFY`, `EVAL_ALLOW_SELF_MATCH`) stay off unless set explicitly.
+
 Python training scripts are in `train/`; install dependencies with:
 
 ```bash
 python3 -m pip install -r train/requirements.txt
 ```
+
+### Replay window
+
+The learner trains on the newest `examples_buffer_max_len * games_per_iter` self-play files
+(default 20 x 16 = 320) taken from `data/` and `data_backup/`. A short window is the failure
+mode that quietly flattens a policy: the value head still converges while the policy never
+sharpens, so the candidate loses badly at a low simulation budget without looking broken.
+The learner therefore prints the window size, the sample count and the step count, and
+warns when the window is short:
+
+```
+replay window: 20 iters x 16 games = 320 files, selected 18
+WARNING: the replay window is short by 302 file(s) (18/320). Training will barely move the model...
+```
+
+`REPLAY_INCLUDE_ARCHIVE=1` fills a short window from `data_archive/` with the newest
+archived files. Self-play samples do not depend on the model that generated them, so a
+work dir that was recreated (or a lineage restarted after an input-layout change) can still
+train on its archived games instead of starving. The live files keep the head of the window,
+so recency weighting is preserved.
 
 The training flow needs the Python side to produce initial ONNX weights before the Rust side can run self-play and evaluation with a model.
 

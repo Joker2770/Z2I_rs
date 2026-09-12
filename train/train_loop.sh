@@ -9,37 +9,50 @@
 #   4. After each evaluation match, both ratings are updated with the standard Elo formula,
 #      persisted to elo.txt and appended to eval_result.log
 #
-# Environment variables:
+# Environment variables (all overridable from the shell, e.g. EVAL_SIMS=384 ./train_loop.sh):
 #   WORK_DIR     training work dir (contains the train_and_eval binary and data/weights), default build
 #   BIN          train_and_eval binary path, default ./train_and_eval
-#   NUM_CONTEST  acceptance evaluation game count, default 20
+#   PYTHON       python interpreter, default python3
 #   BATCH_ID     starting batch id, default 0
 #   MAX_ITERS    max iterations, default 1000
-#   PYTHON       python interpreter, default python3
+#   NUM_CONTEST  acceptance evaluation game count, default 50 (even = complete pairs)
+#   CHECK_FREQ   evaluate every N rounds, default 1 (every round; no silent acceptance)
+#   EVAL_SIMS    simulations per move for evaluation, default 256
+#   EVAL_WORKERS games played concurrently during evaluation, default 2
+#   REPLAY_INCLUDE_ARCHIVE  1 (default) lets the learner fill a short replay window from
+#                data_archive/, 0 trains only on data/ + data_backup/
+#   EVAL_SKIP_VERIFY=1   bypass the weight probe (diagnostics only)
+#   EVAL_ALLOW_SELF_MATCH=1  evaluate a weight against itself (diagnostics only)
+#   STEP         batch id step per round, default 16 (= NUM_2_SELF_PLAY in src/configuration.rs)
 set -euo pipefail
 
 WORK_DIR="${WORK_DIR:-build}"
 BIN="${BIN:-./train_and_eval}"
-# acceptance evaluation game count; an even value completes the colour-swapped
-# opening pairs of openings.txt (odd values still count the last game, but leave it
-# out of the per-pair sign test)
-NUM_CONTEST="${NUM_CONTEST:-10}"
 BATCH_ID="${BATCH_ID:-0}"
 MAX_ITERS="${MAX_ITERS:-1000}"
 PYTHON="${PYTHON:-python3}"
 # When using the load-dynamic CUDA onnxruntime on Colab, uncomment and point to libonnxruntime.so
 # export ORT_LIB_LOCATION=/path/to/libonnxruntime.so
-# Evaluation cost knobs, read by train_and_eval (see README "Evaluation cost knobs"):
-#   EVAL_SIMS=<n>     pin simulations per move instead of sims_for_weight (grows to SIMS_CAP)
-#   EVAL_WORKERS=<n>  games to play concurrently (default 2; 1 keeps the board rendering)
-# Both commands log "eval cost: ... games <s> (<s> per pair) ..." to eval_result.log, so a
-# session budget can come from a measured per-pair cost instead of a guess.
-# eval_with_winner also runs the weight probe on the candidate first (about a second) and
-# rejects it without playing any games when it fails (EVAL_SKIP_VERIFY=1 bypasses that).
-# Run acceptance evaluation every CHECK_FREQ rounds (1 = every round); rounds in between skip
-# evaluation and accept the candidate directly
-# Colab T4 sessions are time-limited; evaluate every other round by default to shorten each round
-CHECK_FREQ="${CHECK_FREQ:-2}"
+
+# --- acceptance evaluation -----------------------------------------------------------------
+# 50 games at EVAL_SIMS=256 is about 85s of play plus ~1s of weight probing: shallow enough
+# to stay cheap, deep enough not to punish a merely flat policy. See README "Evaluation cost
+# knobs" for the measured numbers, and raise EVAL_SIMS (384) when a candidate's loss needs to
+# be trusted as a real strength gap.
+NUM_CONTEST="${NUM_CONTEST:-50}"
+EVAL_SIMS="${EVAL_SIMS:-256}"
+EVAL_WORKERS="${EVAL_WORKERS:-2}"
+export EVAL_SIMS EVAL_WORKERS
+# evaluate every round: skipping a round accepts the candidate without playing a game
+CHECK_FREQ="${CHECK_FREQ:-1}"
+
+# --- replay window -------------------------------------------------------------------------
+# A short replay window is what quietly flattens a policy, so let the learner fall back to
+# data_archive/ when data/ + data_backup/ cannot fill the window. In steady state the window
+# is already full and this never triggers; set to 0 for a strictly recency-only window.
+REPLAY_INCLUDE_ARCHIVE="${REPLAY_INCLUDE_ARCHIVE:-1}"
+export REPLAY_INCLUDE_ARCHIVE
+
 # Each round generates NUM_2_SELF_PLAY games (src/configuration.rs, currently 16);
 # keep the batch id step in sync with it
 STEP="${STEP:-16}"
