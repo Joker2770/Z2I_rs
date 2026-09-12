@@ -219,7 +219,10 @@ Command descriptions:
 - `generate <batch_id>`: load the current weight and generate self-play training data.
 - `eval_with_winner <games>`: evaluate the current weight against the best weight.
 - `eval_with_random <games>`: evaluate the current weight against a random MCTS opponent without a neural network.
-- `verify_weight <id>`: run the weight probe on `weights/<id>.onnx` and exit 1 if it fails.
+- `verify_weight <id>...`: run the weight probe on `weights/<id>.onnx` for each id and exit
+  1 if any fails (2 if one could not be run at all). A single id prints the full
+  breakdown; a sweep prints one headline per weight, so a sharpness trend across a lineage
+  is one command: `train_and_eval verify_weight 1229 1233 1237 1239`.
 
 ### Weight probe (`verify_weight`)
 

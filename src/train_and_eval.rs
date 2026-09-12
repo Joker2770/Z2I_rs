@@ -1092,25 +1092,44 @@ async fn main() {
         } else {
             eprintln!("Failed to read current and best weights!!!");
         }
-    } else if args[1] == "verify_weight" && args.len() == 3 {
+    } else if args[1] == "verify_weight" && args.len() >= 3 {
         // Standalone weight health check: the same probe `eval_with_winner` gates on, so a
         // suspicious weight can be classified in about a second instead of an evaluation
-        // round. Exit code 1 means the probe failed, 2 means it could not run at all.
-        let weight_id: i32 = args[2].parse().expect("Parameter Error!!!");
+        // round. Several ids sweep a lineage: one line each, so a sharpness trend over many
+        // checkpoints is one command.
+        // Exit code 1 means a probe failed, 2 means one could not run at all.
+        let ids: Vec<i32> = args[2..]
+            .iter()
+            .map(|arg| arg.parse().expect("Parameter Error!!!"))
+            .collect();
         let weights_dir = env::current_dir()
             .expect("Unable to get current folder")
             .join("weights");
-        match probe_weight(&weights_dir, weight_id, cfg::DEFAULT_INTRA_THREAD_NUM).await {
-            Ok(report) => {
-                print!("{}", report.summary());
-                if !report.passed() {
-                    std::process::exit(1);
+        let mut failed = false;
+        let mut unreadable = false;
+        for weight_id in ids.iter().copied() {
+            match probe_weight(&weights_dir, weight_id, cfg::DEFAULT_INTRA_THREAD_NUM).await {
+                Ok(report) => {
+                    if ids.len() == 1 || !report.passed() {
+                        print!("{}", report.summary());
+                    } else {
+                        println!("{weight_id} {}", report.headline());
+                    }
+                    if !report.passed() {
+                        failed = true;
+                    }
+                }
+                Err(error) => {
+                    eprintln!("{weight_id}: weight probe could not run: {error}");
+                    unreadable = true;
                 }
             }
-            Err(error) => {
-                eprintln!("weight probe could not run: {error}");
-                std::process::exit(2);
-            }
+        }
+        if unreadable {
+            std::process::exit(2);
+        }
+        if failed {
+            std::process::exit(1);
         }
     } else if args[1] == "eval_with_random" && args.len() == 3 {
         let mut current_weight_id = 0;
