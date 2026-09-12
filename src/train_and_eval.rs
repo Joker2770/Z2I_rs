@@ -941,27 +941,35 @@ async fn main() {
                     );
                     return;
                 }
-                // Best is the incumbent and stays best either way, but if it is unhealthy the
-                // candidate gate would reject every round without saying why: say it here.
+                // Best is the incumbent and stays best either way, but its probe line is the
+                // baseline the candidate's numbers must be read against: a candidate that
+                // passes while being far flatter than best is weaker, not broken. If best
+                // itself fails, every candidate trained from it will look broken, which this
+                // warning makes visible.
                 if current_weight != best_weight
                     && let Ok(best_report) =
                         probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
                             .await
-                    && !best_report.passed()
                 {
-                    let warning = format!(
-                        "WARNING: best weight {best_weight} also fails the probe; every \
-                         candidate trained from it will look broken:\n{}",
-                        best_report.summary()
+                    println!(
+                        "best {} {}",
+                        best_weight,
+                        best_report.headline()
                     );
-                    eprintln!("{}", warning.trim_end());
-                    fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open("eval_result.log")
-                        .expect("Unable to open file")
-                        .write_all(warning.as_bytes())
-                        .expect("Unable to write data");
+                    if !best_report.passed() {
+                        let warning = format!(
+                            "WARNING: best weight {best_weight} also fails the probe; every \
+                             candidate trained from it will look broken:\n{}",
+                            best_report.summary()
+                        );
+                        fs::OpenOptions::new()
+                            .create(true)
+                            .append(true)
+                            .open("eval_result.log")
+                            .expect("Unable to open file")
+                            .write_all(warning.as_bytes())
+                            .expect("Unable to write data");
+                    }
                 }
             }
 

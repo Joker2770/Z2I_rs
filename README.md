@@ -234,9 +234,9 @@ second in total, no search):
 
 ```
 $ train_and_eval verify_weight 1205
-weight probe: PASS (0.9s)
+weight probe: PASS (0.9s, policy sharpness 0.772)
   outputs            ok    6 position(s), |v| max 1.000
-  win in one         ok    3/3 shapes solved
+  win in one         ok    3/3 solved: horizontal gap p=1.000, vertical gap p=0.998, diagonal gap p=0.999
   block the four     ok    top1 156 p=0.833 (warn only)
   value (winning)    ok    v=+1.000
   value (losing)     ok    v=-1.000
@@ -249,15 +249,26 @@ weight probe: PASS (0.9s)
   broken, so this never rejects a candidate on its own.
 - **value signs**: a won position must evaluate positive and a lost one negative, and
   decisively so (|v| >= 0.5), which catches a flat or inverted value head.
+- **policy sharpness** (the number in the headline) is the mean top-1 probability over the
+  probes. It is the one figure that separates "weak" from "destroyed": a destroyed weight
+  returns the uniform 1/225, while a merely weaker weight keeps its tactics with visibly
+  lower confidence (a sharp model answers the block probe near 0.8, a diffuse one near 0.2).
+  The per-shape probabilities are always printed, so a worse candidate can be compared to
+  best instead of being guessed at.
 - Every probe position is parity-correct (`b == w` on Black's turn, `b == w + 1` on White's
   turn) with a harmless Black stone played last, and always White to move: White has no
   forbidden moves under any supported rule, so the expected move is rule-agnostic.
 
 `eval_with_winner` runs the probe on the candidate automatically and **rejects the
-candidate before playing any games** when it fails; it also warns (without blocking) when
-best itself fails, because then every candidate trained from it will look broken. Set
+candidate before playing any games** when it fails; it also probes best and prints its
+headline every round, so the candidate's sharpness can be read against the incumbent's. Set
 `EVAL_SKIP_VERIFY=1` to bypass the gate, e.g. to time an evaluation or to study a known-bad
 weight.
+
+Note that a 128-sim screen is shallow (only 8 inference batches per move), so it punishes a
+diffuse policy harder than a real game would: a candidate that passes the probe but scores
+far below best should be re-checked at a higher `EVAL_SIMS` (256 or 384 still costs only
+seconds per pair) before its weakness is treated as a real regression.
 
 ### Colour-paired evaluations
 

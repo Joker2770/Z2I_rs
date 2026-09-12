@@ -236,6 +236,14 @@ pub struct Criterion {
 pub struct ProbeReport {
     pub criteria: Vec<Criterion>,
     pub elapsed: Duration,
+    /// Mean policy top-1 probability over the probes.
+    ///
+    /// This is the one number that separates "weak" from "destroyed": a destroyed weight
+    /// returns the uniform 1/225 here, while a merely weaker weight keeps the tactics but
+    /// with visibly lower confidence (a healthy model answers the block probe around 0.8,
+    /// a diffuse one around 0.2). Comparing the candidate's sharpness against best's in the
+    /// evaluation log tells you whether a lost round is a regression or a real gap.
+    pub sharpness: f64,
 }
 
 impl ProbeReport {
@@ -248,13 +256,19 @@ impl ProbeReport {
         self.criteria.iter().filter(|c| !c.passed).collect()
     }
 
+    /// One-line verdict, for comparing two weights side by side in a log.
+    pub fn headline(&self) -> String {
+        format!(
+            "weight probe: {} ({:.1}s, policy sharpness {:.3})",
+            if self.passed() { "PASS" } else { "FAIL" },
+            self.elapsed.as_secs_f64(),
+            self.sharpness
+        )
+    }
+
     /// Compact multi-line summary for stdout and the evaluation log.
     pub fn summary(&self) -> String {
-        let mut text = format!(
-            "weight probe: {} ({:.1}s)\n",
-            if self.passed() { "PASS" } else { "FAIL" },
-            self.elapsed.as_secs_f64()
-        );
+        let mut text = format!("{}\n", self.headline());
         for criterion in &self.criteria {
             text.push_str(&format!(
                 "  {:<18} {:<5} {}{}\n",
@@ -323,19 +337,27 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
         name: "win in one".to_string(),
         critical: !win_in_one.is_empty(),
         passed: win_ok,
-        detail: if win_ok {
-            format!("{}/{} shapes solved", win_hits, win_in_one.len())
+        detail: if win_in_one.is_empty() {
+            "no shapes on this board".to_string()
         } else {
-            let missed: Vec<String> = win_in_one
+            // always name every shape with its confidence: a miss tells you which tactic is
+            // gone, and the probabilities are what make a weak policy comparable to best's
+            let shapes: Vec<String> = win_in_one
                 .iter()
-                .filter(|m| m.expected != Some(m.top1))
-                .map(|m| format!("{}: top1 {} p={:.3}", m.name, m.top1, m.top1_prob))
+                .map(|m| {
+                    let label = m.name.trim_start_matches("win in one (").trim_end_matches(')');
+                    if m.expected == Some(m.top1) {
+                        format!("{label} p={:.3}", m.top1_prob)
+                    } else {
+                        format!("{label} MISS p={:.3}", m.top1_prob)
+                    }
+                })
                 .collect();
             format!(
-                "{}/{} shapes solved ({})",
+                "{}/{} solved: {}",
                 win_hits,
                 win_in_one.len(),
-                missed.join("; ")
+                shapes.join(", ")
             )
         },
     });
@@ -397,7 +419,17 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
         });
     }
 
-    ProbeReport { criteria, elapsed }
+    let sharpness = if measurements.is_empty() {
+        0.0
+    } else {
+        measurements.iter().map(|m| m.top1_prob).sum::<f64>() / measurements.len() as f64
+    };
+
+    ProbeReport {
+        criteria,
+        elapsed,
+        sharpness,
+    }
 }
 
 /// Run every probe with one forward pass each.
@@ -733,6 +765,45 @@ mod tests {
         let report = score_probes(&broken, Duration::ZERO);
         assert!(!report.passed());
         assert_eq!(report.failures()[0].name, "outputs");
+    }
+
+    #[test]
+    fn sharpness_reports_the_mean_top1_confidence() {
+        let report = score_probes(&healthy(), Duration::ZERO);
+        // every synthetic measurement uses p = 0.7
+        assert!((report.sharpness - 0.7).abs() < 1e-12);
+        assert!(report.headline().contains("sharpness 0.700"), "{}", report.headline());
+        assert_eq!(score_probes(&[], Duration::ZERO).sharpness, 0.0);
+    }
+
+    #[test]
+    fn the_shape_detail_always_names_and_scores_every_shape() {
+        let mut measurements = healthy();
+        let names: Vec<&'static str> = probe_positions(BOARD, ROW)
+            .iter()
+            .filter(|probe| probe.kind == ProbeKind::WinInOne)
+            .map(|probe| probe.name)
+            .collect();
+        for (measurement, name) in measurements
+            .iter_mut()
+            .filter(|m| m.kind == ProbeKind::WinInOne)
+            .zip(names)
+        {
+            measurement.name = name;
+        }
+        // the middle shape misses, and the detail must say so without hiding the others
+        measurements[1].top1 = 7;
+        let report = score_probes(&measurements, Duration::ZERO);
+        let detail = &report
+            .criteria
+            .iter()
+            .find(|criterion| criterion.name == "win in one")
+            .expect("the criterion exists")
+            .detail;
+        assert!(detail.starts_with("2/3 solved:"), "{detail}");
+        assert!(detail.contains("horizontal gap p=0.700"), "{detail}");
+        assert!(detail.contains("vertical gap MISS p=0.700"), "{detail}");
+        assert!(detail.contains("diagonal gap p=0.700"), "{detail}");
     }
 
     #[test]
