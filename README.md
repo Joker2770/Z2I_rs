@@ -435,6 +435,22 @@ work dir that was recreated (or a lineage restarted after an input-layout change
 train on its archived games instead of starving. The live files keep the head of the window,
 so recency weighting is preserved.
 
+The **rule flag in each file header is filtered before the window is filled**, which is what
+makes a hot-started work dir behave. On a directory copied from another rule (the
+`*_lead_by_*` flow) the parent's files are the newest ones, so filling the window first would
+spend every slot on files `load_samples` then discards, leaving the round to train on only
+the handful of files it just generated -- a starved window that never trips the short-window
+warning. Foreign files are excluded from the window and from the `data_archive/` fallback,
+and archived away after the round, so the directory cleans itself up instead of re-reading
+them every round. An incomplete file (a `.part` a running self-play process has not renamed
+yet) is ignored but never moved:
+
+```
+replay window: 20 iters x 16 games = 320 files, selected 16
+rule check: 304 file(s) carry another rule and were left out of the window (expected 4); they are archived to .../data_archive after this round
+WARNING: the replay window is short by 304 file(s) (16/320). ... 304 file(s) in data/ + data_backup/ belong to another rule, and a work dir started from another rule needs its own 320 files before the window is full.
+```
+
 The training flow needs the Python side to produce initial ONNX weights before the Rust side can run self-play and evaluation with a model.
 
 ### Label audit (`train/audit_labels.py`)
@@ -521,8 +537,9 @@ snapcraft pack --destructive-mode
 cargo fmt --all
 cargo check --all-targets
 cargo test --all-targets
-# python-side self-check (stdlib only, no work dir required)
+# python-side self-checks (stdlib only, no work dir required)
 python3 train/audit_labels.py --self-test
+python3 train/learner.py --self-test
 ```
 
 ## License
