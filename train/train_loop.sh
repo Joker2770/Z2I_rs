@@ -21,6 +21,8 @@
 #   EVAL_WORKERS games played concurrently during evaluation, default 2
 #   REPLAY_INCLUDE_ARCHIVE  1 (default) lets the learner fill a short replay window from
 #                data_archive/, 0 trains only on data/ + data_backup/
+#   ROLLBACK_SCAN_LIMIT  ids the automatic rollback scans below a best weight that fails the
+#                weight probe (default 20, one probe each; 0 keeps best where it is)
 #   EVAL_SKIP_VERIFY=1   bypass the weight probe (diagnostics only)
 #   EVAL_ALLOW_SELF_MATCH=1  evaluate a weight against itself (diagnostics only)
 #   STEP         batch id step per round, default 16 (= NUM_2_SELF_PLAY in src/configuration.rs)

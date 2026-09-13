@@ -237,13 +237,20 @@ second in total, no search):
 
 ```
 $ train_and_eval verify_weight 1205
-weight probe: PASS (0.9s, policy sharpness 0.772)
+weight probe: PASS (3.0s, policy sharpness 0.772)
   outputs            ok    6 position(s), |v| max 1.000
   win in one         ok    3/3 solved: horizontal gap p=1.000, vertical gap p=0.998, diagonal gap p=0.999
   block the four     ok    top1 156 p=0.833 (advisory)
   value (winning)    ok    v=+1.000
   value (losing)     ok    v=-1.000
-  colour plane       ok    flipping ch3 shifts value by 0.000 and policy top-1 by 0.000 -- ignored, so the plane is redundant here (advisory)
+  colour plane       ok    flipping ch3 shifts value by 0.000 and policy top-1 by 0.000 -- ignored, so the plane is redundant here
+  per-position answer:
+    win in one (horizontal gap)        top1 111  p=1.000 v=+1.000
+    win in one (vertical gap)          top1 97   p=0.998 v=+1.000
+    win in one (diagonal gap)          top1 128  p=0.999 v=+1.000
+    must block the four                top1 156  p=0.833 v=-1.000
+    value: mover wins                  top1 108  p=0.591 v=+1.000
+    value: mover loses                 top1 157  p=0.210 v=-1.000
 ```
 
 - **win in one** (3 shapes): the side to move has exactly one immediate five; the raw
@@ -253,14 +260,23 @@ weight probe: PASS (0.9s, policy sharpness 0.772)
   broken, so this never rejects a candidate on its own.
 - **value signs**: a won position must evaluate positive and a lost one negative, and
   decisively so (|v| >= 0.5), which catches a flat or inverted value head.
-- **colour plane** (advisory): every probe is also run with channel 3 negated. That channel
+- **colour plane** (gate): every probe is also run with channel 3 negated. That channel
   carries the absolute side-to-move colour, which on every reachable position is already a
   function of the two stone planes -- this engine never passes (a forbidden Black move ends
   the game rather than skipping the turn), so Black to move implies equal stone counts and
   White to move implies Black is one stone ahead. The plane is therefore informationally
   redundant, Renju included, and this line measures whether the network leans on it anyway:
   a measured FreeStyle model ignores it completely (shift 0.000), while a Renju model would
-  be expected to use it as a shortcut for "am I Black". It is a report line, never a failure.
+  be expected to use it as a shortcut for "am I Black". A *bounded* use is fine and passes;
+  a near-saturated shift (`COLOUR_COLLAPSE_VALUE_SHIFT = 1.5`, i.e. a captured value of +1
+  flipping to -1) is not: it means the value head answers "whose turn is it" and almost
+  nothing about the board, which is easy to miss because such a weight still looks sharp on
+  the tactics probes. Measured on a broken Renju lineage (2026-09-13): 1.999, with v=+0.998
+  on a won position and v=+0.060 on a lost one.
+- **per-position answer**: the six raw answers (top-1 index, its probability and the value)
+  behind the aggregate criteria. A value that is wrong on one shape and a value that is the
+  same everywhere are different bugs with the same headline, and this block is what tells
+  them apart; it is also what a rejected candidate archives in `eval_result.log`.
 - **policy sharpness** (the number in the headline) is the mean top-1 probability over the
   probes. It is the one figure that separates "weak" from "destroyed": a destroyed weight
   returns the uniform 1/225, while a merely weaker weight keeps its tactics with visibly
@@ -284,6 +300,24 @@ Set `EVAL_SKIP_VERIFY=1` to bypass the gate, e.g. to study a known-bad weight or
 evaluation. `generate` runs the same check on best first: a best weight that cannot run
 produces no data at all, and refusing early beats failing later inside the learner with a
 confusing "no valid training samples".
+
+A best weight that fails the probe deadlocks the loop rather than merely slowing it down:
+`generate` refuses to produce data from it, every candidate trained from it inherits the
+break, and the gate rejects each of those candidates without playing a game -- so rounds
+pass with no progress at all. The fingerprint is the counter in `current_and_best_weight.txt`
+drifting far above best, because a healthy loop only ever writes `N N` or `N+1 N` there (a
+rejection collapses current back to best, a promotion collapses both to the candidate):
+
+```
+Current weight: 1124, Best weight: 1107
+WARNING: best weight 1107 also fails the probe; every candidate trained from it will look broken
+```
+
+Both `generate` and `eval_with_winner` therefore **move best back automatically**: the newest
+id within `ROLLBACK_SCAN_LIMIT` (default 20, one probe each; `0` disables it) below the
+failing best that still passes the probe becomes the new best (`<healthy> <healthy>`), and
+the ids in between are retrained from there. When nothing in the window is healthy the run
+says so and leaves the counter alone -- that lineage needs a fresh seed, not another round.
 
 Note that a 128-sim screen is shallow (only 8 inference batches per move), so it punishes a
 diffuse policy harder than a real game would: a candidate that passes the probe but scores
@@ -365,6 +399,7 @@ cd train && ./train_loop.sh
 | `EVAL_SIMS` | `256` | simulations per move during evaluation |
 | `EVAL_WORKERS` | `2` | games played concurrently during evaluation |
 | `REPLAY_INCLUDE_ARCHIVE` | `1` | let a short replay window fall back to `data_archive/` |
+| `ROLLBACK_SCAN_LIMIT` | `20` | ids the automatic best rollback scans for a healthy checkpoint (`0` off) |
 | `BATCH_ID` / `STEP` | `0` / `16` | batch id start and per-round step (`STEP` = `NUM_2_SELF_PLAY`) |
 | `MAX_ITERS` | `1000` | rounds to run |
 
@@ -401,6 +436,35 @@ train on its archived games instead of starving. The live files keep the head of
 so recency weighting is preserved.
 
 The training flow needs the Python side to produce initial ONNX weights before the Rust side can run self-play and evaluation with a model.
+
+### Label audit (`train/audit_labels.py`)
+
+The learner's worst failures are silent: a window whose games abort (no winner, so every ply
+is labelled `v = 0`) or whose winner is always the same colour still trains, still lowers the
+value loss, and only shows up much later as a value head that answers "whose turn is it" --
+which the probe then reports as a colour-plane collapse. This command audits the newest-first
+window the learner would consume and prints the label statistics that make it visible:
+
+```bash
+cd train && python3 audit_labels.py --dir ../build --expect-rule 1
+```
+
+- `winner: Black ... White ... none/aborted ...`: games with no winner carry `v = 0` on every
+  ply, so an abort-heavy window teaches the value head "nobody is winning";
+- `v by side to move (the ch3-shortcut test)`: the mean label for Black-to-move and
+  White-to-move plies. Saturated opposite means are only reachable when one colour wins
+  nearly every game, which is exactly the label stream the constant colour plane can fit;
+- `v per ply` and the `contradict` warning: a ply whose sign disagrees with its own game's
+  winner means the `v` stream itself is broken (`play.rs` writes `v = colour * win`);
+- `pi: mean entropy / top-1 / support`: whether the search targets are sharp enough to teach
+  a policy at all (a nearly uniform `pi` means the simulation count or the seed is the
+  problem, not the data).
+
+A window smaller than 5 readable games reports the statistics without a verdict, since a
+single game is always won by one colour. It exits 1 on a degenerate window, so it can gate a
+run, and `--self-test` round-trips synthetic windows (a learnable one, a single-colour one,
+an undecided one) without touching the work dir. `--files N` (default 40), `--all` and
+`--include-archive` select the window exactly like the learner does.
 
 ### ORT Training
 
@@ -457,6 +521,8 @@ snapcraft pack --destructive-mode
 cargo fmt --all
 cargo check --all-targets
 cargo test --all-targets
+# python-side self-check (stdlib only, no work dir required)
+python3 train/audit_labels.py --self-test
 ```
 
 ## License

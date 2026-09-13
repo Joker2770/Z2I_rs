@@ -208,7 +208,7 @@ pub fn probe_positions(board_size: u8, n_in_row: u8) -> Vec<ProbePosition> {
 }
 
 /// One probe's raw measurement from a single forward pass.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ProbeMeasurement {
     pub name: &'static str,
     pub kind: ProbeKind,
@@ -237,10 +237,31 @@ pub struct ColourPlaneSensitivity {
     pub max_prob_shift: f64,
 }
 
+/// Value shift above which the network reads the side to move off the constant colour plane
+/// instead of off the board.
+///
+/// The plane is informationally redundant on every reachable position (it is a function of
+/// the two stone planes, see [`ColourPlaneSensitivity`]), so a healthy network may ignore it
+/// completely -- the reference FreeStyle model measures 0.000. A *near-saturated* shift, on
+/// the other hand, means the value head answers "whose turn is it" and almost nothing about
+/// the position: a captured value of +1 flipping to -1 gives a shift of ~2.0. That is a
+/// silent failure, because such a weight still looks sharp on the tactics probes.
+///
+/// The line is deliberately well above any legitimate colour use (a genuinely colour-
+/// asymmetric Renju value has no reason to move by more than a fraction of a point when a
+/// constant plane is negated), so this gate fires on collapse rather than on style.
+/// `EVAL_SKIP_VERIFY=1` remains the escape hatch for studying a weight that trips it.
+pub const COLOUR_COLLAPSE_VALUE_SHIFT: f64 = 1.5;
+
 impl ColourPlaneSensitivity {
     /// Whether the network is indifferent to the plane (numeric noise only).
     pub fn is_ignored(&self) -> bool {
         self.max_value_shift < 0.01 && self.max_prob_shift < 0.01
+    }
+
+    /// Whether the value follows the plane alone, i.e. the board no longer decides it.
+    pub fn is_collapsed(&self) -> bool {
+        self.max_value_shift >= COLOUR_COLLAPSE_VALUE_SHIFT
     }
 }
 
@@ -279,6 +300,12 @@ pub struct Criterion {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProbeReport {
     pub criteria: Vec<Criterion>,
+    /// The raw per-position answers, in probe order.
+    ///
+    /// The criteria aggregate over positions, so on their own they say *that* something is
+    /// broken but not *which* position is broken -- which is exactly the distinction between
+    /// a value regression on one shape and a head that answers the same thing everywhere.
+    pub measurements: Vec<ProbeMeasurement>,
     pub elapsed: Duration,
     /// Mean policy top-1 probability over the probes.
     ///
@@ -321,6 +348,21 @@ impl ProbeReport {
                 criterion.detail,
                 if criterion.critical { "" } else { " (advisory)" }
             ));
+        }
+        // Per-position answers: a value that is wrong on one shape and a value that is the
+        // same everywhere are different bugs with the same headline, and this is the only
+        // line that tells them apart (the log of a rejected candidate keeps both).
+        if !self.measurements.is_empty() {
+            text.push_str("  per-position answer:\n");
+            for measurement in &self.measurements {
+                text.push_str(&format!(
+                    "    {:<34} top1 {:<4} p={:.3} v={:+.3}\n",
+                    measurement.name,
+                    measurement.top1,
+                    measurement.top1_prob,
+                    measurement.value
+                ));
+            }
         }
         text
     }
@@ -471,8 +513,36 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
 
     ProbeReport {
         criteria,
+        measurements: measurements.to_vec(),
         elapsed,
         sharpness,
+    }
+}
+
+/// The colour-plane criterion, split out of [`probe_weight`] so the collapse threshold can
+/// be tested without a forward pass.
+///
+/// It is **critical**: a value driven by the constant plane alone cannot be trusted on any
+/// position, and the probe is the last check before such a weight either generates a round
+/// of self-play data or gets promoted.
+fn colour_plane_criterion(sensitivity: ColourPlaneSensitivity) -> Criterion {
+    let collapsed = sensitivity.is_collapsed();
+    Criterion {
+        name: "colour plane".to_string(),
+        critical: true,
+        passed: !collapsed,
+        detail: format!(
+            "flipping ch3 shifts value by {:.3} and policy top-1 by {:.3} -- {}",
+            sensitivity.max_value_shift,
+            sensitivity.max_prob_shift,
+            if collapsed {
+                "collapsed: the value follows the side to move, not the board"
+            } else if sensitivity.is_ignored() {
+                "ignored, so the plane is redundant here"
+            } else {
+                "used by the network"
+            }
+        ),
     }
 }
 
@@ -534,23 +604,12 @@ pub async fn probe_weight(
 
     let mut report = score_probes(&results, started.elapsed());
     if !flipped_results.is_empty() {
-        let sensitivity = colour_plane_sensitivity(&results, &flipped_results);
-        report.criteria.push(Criterion {
-            name: "colour plane".to_string(),
-            // informational: it describes the network, it does not judge it
-            critical: false,
-            passed: true,
-            detail: format!(
-                "flipping ch3 shifts value by {:.3} and policy top-1 by {:.3} -- {}",
-                sensitivity.max_value_shift,
-                sensitivity.max_prob_shift,
-                if sensitivity.is_ignored() {
-                    "ignored, so the plane is redundant here"
-                } else {
-                    "used by the network"
-                }
-            ),
-        });
+        report
+            .criteria
+            .push(colour_plane_criterion(colour_plane_sensitivity(
+                &results,
+                &flipped_results,
+            )));
     }
     Ok(report)
 }
@@ -912,6 +971,67 @@ mod tests {
         let same = colour_plane_sensitivity(&normal, &normal);
         assert!(same.is_ignored());
         assert_eq!(same.max_value_shift, 0.0);
+    }
+
+    #[test]
+    fn is_collapsed_fires_only_on_a_near_saturated_shift() {
+        let sensitivity = |shift: f64| ColourPlaneSensitivity {
+            max_value_shift: shift,
+            max_prob_shift: 0.0,
+        };
+        assert!(!sensitivity(0.0).is_collapsed());
+        assert!(!sensitivity(0.31).is_collapsed());
+        assert!(!sensitivity(COLOUR_COLLAPSE_VALUE_SHIFT - 0.001).is_collapsed());
+        assert!(sensitivity(COLOUR_COLLAPSE_VALUE_SHIFT).is_collapsed());
+        // the measured Renju failure of 2026-09-13
+        assert!(sensitivity(1.999).is_collapsed());
+    }
+
+    #[test]
+    fn a_collapsed_colour_plane_is_a_critical_failure() {
+        let criterion = colour_plane_criterion(ColourPlaneSensitivity {
+            max_value_shift: 1.999,
+            max_prob_shift: 0.304,
+        });
+        assert!(criterion.critical);
+        assert!(!criterion.passed);
+        assert!(criterion.detail.contains("collapsed"), "{}", criterion.detail);
+    }
+
+    #[test]
+    fn a_bounded_colour_response_still_passes() {
+        let ignored = colour_plane_criterion(ColourPlaneSensitivity {
+            max_value_shift: 0.0,
+            max_prob_shift: 0.0,
+        });
+        assert!(ignored.critical && ignored.passed);
+        assert!(ignored.detail.contains("ignored"), "{}", ignored.detail);
+
+        let used = colour_plane_criterion(ColourPlaneSensitivity {
+            max_value_shift: 0.42,
+            max_prob_shift: 0.13,
+        });
+        assert!(used.passed, "a bounded colour use is not a failure");
+        assert!(used.detail.contains("used by the network"), "{}", used.detail);
+    }
+
+    #[test]
+    fn the_summary_lists_every_position_answer() {
+        let report = score_probes(&healthy(), Duration::ZERO);
+        let text = report.summary();
+        assert_eq!(report.measurements.len(), 6);
+        for measurement in &report.measurements {
+            assert!(text.contains(measurement.name), "{text}");
+        }
+        // the synthetic value probes carry +0.95 / -0.92, which only this block prints
+        assert!(text.contains("v=+0.950"), "{text}");
+        assert!(text.contains("v=-0.920"), "{text}");
+        // an empty probe set prints no block at all
+        assert!(
+            !score_probes(&[], Duration::ZERO)
+                .summary()
+                .contains("per-position")
+        );
     }
 
     #[test]

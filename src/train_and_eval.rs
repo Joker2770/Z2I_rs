@@ -23,7 +23,7 @@ use mcts::MCTS;
 use openings::{Opening, ScheduledGame, load_openings, pair_count, schedule, sign_test_p_value};
 use ortopt::NeuralNetwork;
 use play::SelfPlay;
-use probe::probe_weight;
+use probe::{ProbeReport, probe_weight};
 use rule::Color;
 
 use std::{
@@ -93,6 +93,20 @@ fn skip_verify() -> bool {
         env::var("EVAL_SKIP_VERIFY").as_deref(),
         Ok("1") | Ok("true") | Ok("yes")
     )
+}
+
+/// Default depth of the rollback scan, in weight ids (each step costs one probe).
+const DEFAULT_ROLLBACK_SCAN_LIMIT: usize = 20;
+
+/// How many ids below a failing best the rollback scan looks before giving up.
+///
+/// `ROLLBACK_SCAN_LIMIT=0` turns the rollback off, which leaves the run reporting the
+/// deadlock every round instead of moving best back to a usable checkpoint.
+fn rollback_scan_limit() -> usize {
+    env::var("ROLLBACK_SCAN_LIMIT")
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+        .unwrap_or(DEFAULT_ROLLBACK_SCAN_LIMIT)
 }
 
 pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
@@ -773,6 +787,81 @@ fn reject_candidate(best_weight: i32, message: &str) {
         .expect("Unable to write data");
 }
 
+/// Find the newest checkpoint below `from_id` that still passes the probe.
+async fn newest_healthy_weight(
+    weights_dir: &Path,
+    from_id: i32,
+    limit: usize,
+) -> Option<(i32, ProbeReport)> {
+    for offset in 1..=limit as i32 {
+        let candidate = from_id - offset;
+        if candidate < 0 {
+            break;
+        }
+        if !weights_dir.join(format!("{candidate}.onnx")).exists() {
+            // a file that is not there is the normal shape of an already rolled-back round
+            continue;
+        }
+        match probe_weight(weights_dir, candidate, cfg::DEFAULT_INTRA_THREAD_NUM).await {
+            Ok(report) if report.passed() => return Some((candidate, report)),
+            Ok(report) => println!("rollback scan: {candidate} {}", report.headline()),
+            Err(error) => println!("rollback scan: {candidate} skipped: {error}"),
+        }
+    }
+    None
+}
+
+/// Move best back to the newest healthy checkpoint when best itself is unusable.
+///
+/// A best weight that fails the probe deadlocks the loop: `generate` refuses to produce data
+/// from it and every candidate trained from it inherits the break, so the health gate rejects
+/// each round and the run burns iterations without progressing. The fingerprint is the
+/// counter drifting far above best, since `current_and_best_weight.txt` can only ever hold
+/// `N N` or `N+1 N` while the loop is healthy (`reject_candidate` collapses current to best on
+/// every rejection, and a promotion collapses both to the candidate).
+///
+/// Retraining then resumes from the checkpoint that still answers the probe, and the ids in
+/// between are regenerated as the loop advances. Returns the id best was moved to, or `None`
+/// when nothing in the scan window is healthy -- which means the lineage needs a fresh seed
+/// rather than another round.
+async fn roll_back_best(weights_dir: &Path, best_weight: i32) -> Option<i32> {
+    let limit = rollback_scan_limit();
+    if limit == 0 {
+        println!("rollback disabled (ROLLBACK_SCAN_LIMIT=0): best stays at {best_weight}");
+        return None;
+    }
+    let Some((healthy, report)) = newest_healthy_weight(weights_dir, best_weight, limit).await
+    else {
+        eprintln!(
+            "no healthy weight within {limit} id(s) below {best_weight}: this lineage needs a \
+             fresh seed (see README 'Weight probe')"
+        );
+        return None;
+    };
+    if let Err(error) = fs::write(
+        "current_and_best_weight.txt",
+        format!("{healthy} {healthy}"),
+    ) {
+        eprintln!("could not move best back to {healthy}: {error}");
+        return None;
+    }
+    let message = format!(
+        "ROLLBACK: best weight {best_weight} is unusable, best moved back to {healthy} ({}); \
+         the ids in between are retrained from it\n{}",
+        report.headline(),
+        report.summary()
+    );
+    println!("{}", message.trim_end());
+    if let Ok(mut file) = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("eval_result.log")
+    {
+        let _ = file.write_all(message.as_bytes());
+    }
+    Some(healthy)
+}
+
 /// Update both sides' Elo from one evaluation match result, returning a log description
 fn update_elo(weight_a: i32, weight_b: i32, outcome: &EvalOutcome) -> String {
     let total = outcome.a_win + outcome.b_win + outcome.draw;
@@ -873,6 +962,7 @@ async fn main() {
                                  weight probe (EVAL_SKIP_VERIFY=1 to generate anyway)\n{}",
                                 report.summary()
                             );
+                            roll_back_best(&weights_dir, best_weight as i32).await;
                             return;
                         }
                         Err(error) => {
@@ -880,6 +970,7 @@ async fn main() {
                                 "Refusing to generate: best weight {best_weight} cannot be used: \
                                  {error}\n(EVAL_SKIP_VERIFY=1 to generate anyway)"
                             );
+                            roll_back_best(&weights_dir, best_weight as i32).await;
                             return;
                         }
                     }
@@ -980,11 +1071,23 @@ async fn main() {
                 // passes while being far flatter than best is weaker, not broken. If best
                 // itself fails, every candidate trained from it will look broken, which this
                 // warning makes visible.
-                if current_weight != best_weight
-                    && let Ok(best_report) =
-                        probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
+                if current_weight != best_weight {
+                    let best_report =
+                        match probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
                             .await
-                {
+                        {
+                            Ok(report) => report,
+                            // An unreadable best is the same deadlock as a failing one: no data
+                            // can be generated from it and no game can be played against it, so
+                            // roll back instead of reporting a candidate against a phantom (this
+                            // is also the shape a half-written or vanished weight file takes on a
+                            // synced Drive work dir).
+                            Err(error) => {
+                                eprintln!("best weight {best_weight} cannot be probed: {error}");
+                                roll_back_best(&weights_dir, best_weight).await;
+                                return;
+                            }
+                        };
                     println!("best {} {}", best_weight, best_report.headline());
                     // policy sharpness is a proxy, not a verdict: a candidate that is far
                     // flatter than best usually trained on too little data, which the learner
@@ -1017,6 +1120,10 @@ async fn main() {
                             .expect("Unable to open file")
                             .write_all(warning.as_bytes())
                             .expect("Unable to write data");
+                        // Best is the incumbent and a candidate never becomes best when best is
+                        // below the bar, so this deadlock has to be broken here: move best back
+                        // to the newest checkpoint that still answers the probe.
+                        roll_back_best(&weights_dir, best_weight).await;
                     }
                 }
             }
