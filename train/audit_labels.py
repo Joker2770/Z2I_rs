@@ -7,6 +7,13 @@ is it" instead of "who is winning" -- which the weight probe then reports as a c
 collapse (`COLOUR_COLLAPSE_VALUE_SHIFT` in `src/probe.rs`). This command prints the label
 statistics that make those datasets visible before 20 rounds are spent on them.
 
+It also verifies the labels against the **final position** of every game: the stored `v` and
+`colour` only say who the engine thought won, while the board says whether a winning line is
+really there, whether it belongs to that colour, and whether the rule that was in force would
+have accepted it (per `src/free_style.rs`, `standard.rs`, `renju.rs`, `caro.rs`). The label
+statistics alone cannot catch that class of error, because the labels are self-consistent by
+construction -- they all come from the same wrong number.
+
 File layout (see `src/play.rs`, mirrors `learner.py::load_samples`):
 
     step      i32
@@ -44,6 +51,14 @@ COLOUR_ONLY_MEAN = 0.9
 COLOUR_ONLY_MIN_PLIES = 20
 # below this many games no winner rate means anything: a single game always has one winner
 MIN_GAMES_FOR_VERDICT = 5
+# rule flag bits (src/rule.rs): 1 = Standard (exactly five), 4 = Renju, 0 = FreeStyle,
+# 8 = Caro; a combination requires every sub-rule to agree (src/gomoku.rs)
+RULE_STANDARD = 0b0001
+RULE_RENJU = 0b0100
+BLACK, WHITE = 1, -1
+# board size of the synthetic fixtures: wide enough to hold the six-runs the rule-semantics
+# tests need, shared by write_game and self_test so the two cannot drift apart
+SELFTEST_BOARD = 6
 
 
 def parse_batch_id(file_name):
@@ -84,7 +99,7 @@ def select_files(build_dir, folders, newest):
     return [path for _, _, path in candidates]
 
 
-def read_game(path, board):
+def read_game(path, board, verify_termination=True):
     """Parse one data file.
 
     Returns `(summary, reason)`: `summary` is a dict for a readable file, `reason` a string
@@ -108,18 +123,30 @@ def read_game(path, board):
             rule = int.from_bytes(binfile.read(4), byteorder="little", signed=True)
         else:
             rule = 0
-        # boards are not needed for a label audit: jump straight to the policy block, whose
-        # offset depends on whether this file carries the rule field
-        binfile.seek(binfile.tell() + step * plane * 4, os.SEEK_SET)
+        # the board blocks are only needed for the winner check, and only the final snapshot
+        # is used: the policy block starts right after them
+        board_start = binfile.tell()
+        binfile.seek(board_start + step * plane * 4, os.SEEK_SET)
         pi = struct.unpack(f"<{step * plane}f", binfile.read(step * plane * 4))
         v = struct.unpack(f"<{step}i", binfile.read(step * 4))
         color = struct.unpack(f"<{step}i", binfile.read(step * 4))
+        last_moves = struct.unpack(f"<{step}i", binfile.read(step * 4))
+        last_position = None
+        if verify_termination:
+            # the snapshot of the last stored ply is the position *before* the move that
+            # decided the game (`play.rs` stores the pre-move board at every ply), which is
+            # what the termination check reads; the deciding move itself is not stored
+            binfile.seek(board_start + (step - 1) * plane * 4, os.SEEK_SET)
+            last_position = struct.unpack(f"<{plane}i", binfile.read(plane * 4))
     summary = {
         "path": path,
         "step": step,
         "rule": rule,
         "v": v,
         "color": color,
+        "last_moves": last_moves,
+        "termination_check": termination_check(last_position, v, color, board, rule, step)
+        if verify_termination else (None, "unchecked", "not checked"),
         "pi_entropy": [],
         "pi_top1": [],
         "pi_support": [],
@@ -151,6 +178,130 @@ def classify_winner(v, color):
     return winner, disagreements
 
 
+def colour_name(colour):
+    """Board value to a readable name (`play.rs` writes +1 for Black, -1 for White)."""
+    if colour == BLACK:
+        return "Black"
+    if colour == WHITE:
+        return "White"
+    return "empty"
+
+
+def final_run_length(final_board, index, board_size):
+    """Length of the same-colour run through `index`, in its longest direction (0 if empty)."""
+    stone = final_board[index]
+    if stone == 0:
+        return 0
+    best = 0
+    for d_row, d_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        length = 1
+        for sign in (1, -1):
+            row = index // board_size + sign * d_row
+            col = index % board_size + sign * d_col
+            while (
+                0 <= row < board_size
+                and 0 <= col < board_size
+                and final_board[row * board_size + col] == stone
+            ):
+                length += 1
+                row += sign * d_row
+                col += sign * d_col
+        best = max(best, length)
+    return best
+
+
+def is_deciding_run(length, colour, rule):
+    """Whether a run of `length` ends the game for `colour` under `rule`.
+
+    Mirrors the judges in src/: five or more wins in FreeStyle (`free_style.rs` counts `>= 4`
+    neighbours) and in Caro; Standard counts exactly five (`standard.rs` uses `== 4`, so an
+    overline is not a win); Renju adds Black's illegal overline, which is why Black needs
+    exactly five there while White's overline still wins (`renju.rs`).
+    """
+    if rule & RULE_RENJU and colour == BLACK:
+        return length == 5
+    if rule & RULE_STANDARD:
+        return length == 5
+    return length >= 5
+
+
+def line_windows(board_size, length=5):
+    """Every contiguous `length`-cell line on the board, as index tuples (4 directions)."""
+    for d_row, d_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
+        for row in range(board_size):
+            for col in range(board_size):
+                end_row = row + (length - 1) * d_row
+                end_col = col + (length - 1) * d_col
+                if not (0 <= end_row < board_size and 0 <= end_col < board_size):
+                    continue
+                yield tuple(
+                    (row + step * d_row) * board_size + (col + step * d_col)
+                    for step in range(length)
+                )
+
+
+def has_deciding_run(board, board_size, colour, rule):
+    """Whether `colour` already holds a line that would have ended the game."""
+    return any(
+        stone == colour
+        and is_deciding_run(final_run_length(board, index, board_size), colour, rule)
+        for index, stone in enumerate(board)
+    )
+
+
+def has_four(board, board_size, colour):
+    """Whether `colour` can complete five with one move: a 5-window with one empty cell."""
+    for window in line_windows(board_size):
+        stones = [board[index] for index in window]
+        if stones.count(colour) == 4 and stones.count(0) == 1:
+            return True
+    return False
+
+
+def termination_check(board, v, color, board_size, rule, step):
+    """Check a game's ending against the position it was decided from.
+
+    `play.rs` stores the position **before** the move about to be played at every ply, so the
+    move that decided a game is not in the file -- but the ending is still pinned down:
+
+    * the side to move at the last stored ply plays the deciding move, so a positive label
+      there has to be an ordinary five: the position before it must hold a four to complete.
+      Anything else means the labels and the positions disagree, which poisons every target in
+      the file while leaving the aggregate statistics perfectly self-consistent;
+    * a negative label there means the mover lost **on their own move**, which only Renju
+      allows (Black's forbidden move ends the game with White winning). Under any other rule
+      that cannot happen, so it is reported;
+    * and neither side may already hold a deciding line before that move, which would mean the
+      game ran past its end.
+
+    Returns (True/False/None, kind, detail). `kind` is "five", "forbidden" (Renju only) or
+    "unchecked"; None means there was nothing to check.
+    """
+    if step < 2 or color[-1] not in (BLACK, WHITE):
+        return None, "unchecked", "no side to move to check"
+    label = v[-1]
+    if label == 0:
+        return None, "unchecked", "the last ply carries no label"
+    mover = color[-1]
+    for colour in (BLACK, WHITE):
+        if has_deciding_run(board, board_size, colour, rule):
+            return (False, "unchecked",
+                    f"{colour_name(colour)} already holds a deciding line before the last "
+                    f"move, so the game should have ended earlier")
+    if label > 0:
+        if not has_four(board, board_size, mover):
+            return (False, "unchecked",
+                    f"labelled {colour_name(mover)} win on the last move, but the position "
+                    f"before it holds no four for {colour_name(mover)}")
+        return True, "five", f"{colour_name(mover)} completes a five"
+    if rule & RULE_RENJU and mover == BLACK:
+        return (True, "forbidden",
+                "forbidden move (Renju Black): the mover loses on their own move")
+    return (False, "unchecked",
+            f"labelled {colour_name(mover)} loss on their own last move, but rule {rule} has "
+            f"no way for a player to lose on their own move")
+
+
 def audit(games):
     """Aggregate per-file summaries into the report the command prints."""
     report = {
@@ -162,6 +313,9 @@ def audit(games):
         "v_by_color": {1: [], -1: []},
         "plies": 0,
         "disagreements": 0,
+        "termination_games": 0,
+        "termination_failures": [],
+        "forbidden_endings": 0,
         "pi_entropy": [],
         "pi_top1": [],
         "pi_support": [],
@@ -173,6 +327,14 @@ def audit(games):
         winner, disagreements = classify_winner(game["v"], game["color"])
         report["winners"][winner] += 1
         report["disagreements"] += disagreements
+        verified, kind, detail = game["termination_check"]
+        if verified is not None:
+            report["termination_games"] += 1
+            if verified:
+                if kind == "forbidden":
+                    report["forbidden_endings"] += 1
+            else:
+                report["termination_failures"].append((game["path"], detail))
         for ply in range(game["step"]):
             report["plies"] += 1
             value = game["v"][ply]
@@ -197,9 +359,10 @@ def print_report(report, skipped, candidates, expect_rule, board):
     """Print the human-readable audit and return whether the labels are degenerate.
 
     Degenerate means the label stream cannot teach a value function: no winner in most games
-    (every ply labelled 0), a single-colour winner rate, or a `v` that is saturated with the
-    side to move -- the last one is precisely the ch3 shortcut a value head collapses into,
-    and what `COLOUR_COLLAPSE_VALUE_SHIFT` in `src/probe.rs` reports on the weight side.
+    (every ply labelled 0), a single-colour winner rate, a `v` that is saturated with the side
+    to move -- the last one is precisely the ch3 shortcut a value head collapses into, and what
+    `COLOUR_COLLAPSE_VALUE_SHIFT` in `src/probe.rs` reports on the weight side -- or labels
+    that the final position contradicts.
     """
     games = report["games"]
     print(f"# label audit ({board}x{board}, {candidates} candidate file(s))")
@@ -247,7 +410,31 @@ def print_report(report, skipped, candidates, expect_rule, board):
         f"({len(by_color[1])} plies)   White {white_mean:+.3f} ({len(by_color[-1])} plies)"
     )
 
+    checked = report["termination_games"]
+    if checked:
+        failed = len(report["termination_failures"])
+        print(
+            f"termination check: {checked - failed}/{checked} game(s) end the way their labels "
+            f"say (only the pre-move position is stored, so a five is checked as the four "
+            f"that completes it)"
+        )
+        if report["forbidden_endings"]:
+            print(
+                f"  note: {report['forbidden_endings']} game(s) ended with the mover losing on "
+                f"their own move -- Renju's forbidden-move loss, i.e. Black played an illegal "
+                f"shape (those plies teach \"Black to move means Black is losing\")"
+            )
+        for file_path, detail in report["termination_failures"][:5]:
+            print(f"  {os.path.basename(file_path)}: {detail}")
+
     degenerate = False
+    if report["termination_failures"]:
+        print(
+            "  DEGENERATE: the stored labels disagree with the positions they were decided "
+            "from, so those files poison every target in them -- inspect them before training "
+            "on this window"
+        )
+        degenerate = True
     if report["disagreements"]:
         print(
             f"  WARNING: {report['disagreements']} ply label(s) contradict their own game's "
@@ -302,11 +489,11 @@ def print_report(report, skipped, candidates, expect_rule, board):
     return degenerate
 
 
-def read_window(paths, board):
+def read_window(paths, board, verify_termination=True):
     """Read every file in `paths`, returning `(games, skipped)`."""
     games, skipped = [], []
     for path in paths:
-        game, reason = read_game(path, board)
+        game, reason = read_game(path, board, verify_termination)
         if game is None:
             skipped.append((path, reason))
         else:
@@ -317,46 +504,67 @@ def read_window(paths, board):
 # ------------------------------------------------------------------ self-test
 
 
-def write_game(path, rule, plies):
-    """Write one synthetic data file: `plies` is a list of (colour, v, pi row)."""
-    board = 3  # the self-test only needs the layout, not a legal game
-    plane = board * board
+def write_game(path, rule, plies, board=None, last_move=None):
+    """Write one synthetic data file.
+
+    `plies` is a list of (colour, v, pi row). `board`/`last_move` describe the **final**
+    position and are replicated into every ply's snapshot: only the last snapshot is read
+    (by the winner check), and the feature content is irrelevant to a label audit.
+    """
+    size = SELFTEST_BOARD
+    plane = size * size
+    stones = list(board) if board is not None else [0] * plane
+    assert len(stones) == plane, stones
+    last_moves = [last_move if last_move is not None else -1] * len(plies)
     with open(path, "wb") as binfile:
         binfile.write(struct.pack("<i", len(plies)))
         binfile.write(struct.pack("<i", rule))
         for _ in plies:
-            binfile.write(struct.pack(f"<{plane}i", *([0] * plane)))
+            binfile.write(struct.pack(f"<{plane}i", *stones))
         for _, _, row in plies:
             assert len(row) == plane
             binfile.write(struct.pack(f"<{plane}f", *row))
         binfile.write(struct.pack(f"<{len(plies)}i", *[v for _, v, _ in plies]))
         binfile.write(struct.pack(f"<{len(plies)}i", *[c for c, _, _ in plies]))
-        binfile.write(struct.pack(f"<{len(plies)}i", *[-1] * len(plies)))
+        binfile.write(struct.pack(f"<{len(plies)}i", *last_moves))
 
 
 def self_test():
     """Round-trip synthetic windows: a learnable one, then the degenerate variants."""
     temp = tempfile.mkdtemp(prefix="audit_labels_")
     try:
-        board = 3
+        board = SELFTEST_BOARD
         plane = board * board
         one_hot = [0.8, 0.1, 0.1] + [0.0] * (plane - 3)
         expected_entropy = -math.fsum(
             value * math.log(value) for value in one_hot if value > 0.0
         )
+        # final positions the termination check reads: `play.rs` stores the position *before*
+        # the move that decided the game, so a five shows up as the four that completes it
+        black_four = [BLACK] * 4 + [0] * (plane - 4)
+        white_four = [WHITE] * 4 + [0] * (plane - 4)
+        black_five = [BLACK] * 5 + [0] * (plane - 5)
 
         normal_dir = os.path.join(temp, "normal")
         os.makedirs(normal_dir)
-        black_win = [(1, 1, one_hot), (-1, -1, one_hot), (1, 1, one_hot), (-1, -1, one_hot)]
-        white_win = [(1, -1, one_hot), (-1, 1, one_hot), (1, -1, one_hot)]
+        # Black wins: the labels follow the mover, and the last stored ply has the winner to
+        # move -- that is who plays the deciding move, which the file does not store
+        black_win = [(1, 1, one_hot), (-1, -1, one_hot), (1, 1, one_hot),
+                     (-1, -1, one_hot), (1, 1, one_hot)]
+        # White wins: the same shape with Black moving first
+        white_win = [(1, -1, one_hot), (-1, 1, one_hot), (1, -1, one_hot), (-1, 1, one_hot)]
+        # the mover loses on their own last move: only Renju allows that (forbidden move)
+        mover_loses = [(-1, 1, one_hot), (1, -1, one_hot)]
         aborted = [(1, 0, one_hot), (-1, 0, one_hot)]
         # a learnable window: both colours win, and one game is undecided
         game_id = 0
         for _ in range(3):
-            write_game(os.path.join(normal_dir, f"data_{game_id}_deadbeef"), 1, black_win)
+            write_game(os.path.join(normal_dir, f"data_{game_id}_deadbeef"), 1, black_win,
+                       board=black_four)
             game_id += 16
         for _ in range(2):
-            write_game(os.path.join(normal_dir, f"data_{game_id}_cafebabe"), 1, white_win)
+            write_game(os.path.join(normal_dir, f"data_{game_id}_cafebabe"), 1, white_win,
+                       board=white_four)
             game_id += 16
         write_game(os.path.join(normal_dir, f"data_{game_id}_0badc0de"), 1, aborted)
         # a truncated file: it claims four plies and holds none
@@ -375,14 +583,19 @@ def self_test():
         assert report["rules"] == {1: 6}, report["rules"]
         # three Black wins, two White wins, one game with no winner at all
         assert report["winners"] == {1: 3, -1: 2, None: 1}, report["winners"]
-        # 20 plies: +1 eight times, -1 ten times, 0 twice
-        assert report["v_counts"] == {1: 8, -1: 10, 0: 2}, report["v_counts"]
-        assert report["plies"] == 20, report["plies"]
+        # 25 plies: +1 thirteen times, -1 ten times, 0 twice
+        assert report["v_counts"] == {1: 13, -1: 10, 0: 2}, report["v_counts"]
+        assert report["plies"] == 25, report["plies"]
         assert report["disagreements"] == 0, report
         # both colours move, and every label matches its own game's winner (counted rather
         # than listed: the file order follows mtime, which is not part of the contract)
-        assert Counter(report["v_by_color"][1]) == Counter({1: 6, -1: 4, 0: 1}), report["v_by_color"]
-        assert Counter(report["v_by_color"][-1]) == Counter({1: 2, -1: 6, 0: 1}), report["v_by_color"]
+        assert Counter(report["v_by_color"][1]) == Counter({1: 9, -1: 4, 0: 1}), report["v_by_color"]
+        assert Counter(report["v_by_color"][-1]) == Counter({1: 4, -1: 6, 0: 1}), report["v_by_color"]
+        # every labelled win really is a four waiting to complete a five, and the undecided
+        # game has nothing to check
+        assert report["termination_games"] == 5, report["termination_games"]
+        assert report["termination_failures"] == [], report["termination_failures"]
+        assert report["forbidden_endings"] == 0, report["forbidden_endings"]
         assert report["pi_unnormalized"] == 0, report
         # the rows are written as f32, so the entropy matches the Python floats to f32
         # precision rather than exactly
@@ -393,12 +606,14 @@ def self_test():
         black_dir = os.path.join(temp, "black_only")
         os.makedirs(black_dir)
         for game_id in range(0, 6 * 16, 16):
-            write_game(os.path.join(black_dir, f"data_{game_id}_beefbeef"), 1, black_win)
+            write_game(os.path.join(black_dir, f"data_{game_id}_beefbeef"), 1, black_win,
+                       board=black_four)
         black_games, black_skipped = read_window(
             select_files(black_dir, ("",), None), board
         )
         black_report = audit(black_games)
         assert black_report["winners"] == {1: 6, -1: 0, None: 0}, black_report["winners"]
+        assert black_report["termination_failures"] == [], black_report["termination_failures"]
         assert print_report(black_report, black_skipped, 6, 1, board) is True
 
         # ... and so is a window where nothing is ever decided
@@ -411,12 +626,40 @@ def self_test():
         )
         abort_report = audit(abort_games)
         assert abort_report["winners"][None] == 6, abort_report["winners"]
+        assert abort_report["termination_games"] == 0, abort_report["termination_games"]
         assert print_report(abort_report, abort_skipped, 6, 1, board) is True
+
+        # the termination check must catch labels the position contradicts
+        bad_dir = os.path.join(temp, "bad_labels")
+        os.makedirs(bad_dir)
+        # labelled Black win, but the four waiting on the board is White's
+        write_game(os.path.join(bad_dir, "data_0_aaaaaaaa"), 1, black_win, board=white_four)
+        # a five is already on the board, so the game ran past its end
+        write_game(os.path.join(bad_dir, "data_16_bbbbbbbb"), 1, black_win, board=black_five)
+        # a mover cannot lose on their own move under FreeStyle
+        write_game(os.path.join(bad_dir, "data_32_eeeeeeee"), 0, mover_loses, board=black_four)
+        bad_games, bad_skipped = read_window(select_files(bad_dir, ("",), None), board)
+        bad_report = audit(bad_games)
+        assert bad_report["termination_games"] == 3, bad_report["termination_games"]
+        assert len(bad_report["termination_failures"]) == 3, bad_report["termination_failures"]
+        assert print_report(bad_report, bad_skipped, 3, None, board) is True
+
+        # ... while the same ending is Renju's forbidden-move loss, which is legitimate
+        ok_dir = os.path.join(temp, "rule_semantics")
+        os.makedirs(ok_dir)
+        write_game(os.path.join(ok_dir, "data_0_cccccccc"), 4, mover_loses, board=black_four)
+        write_game(os.path.join(ok_dir, "data_16_dddddddd"), 1, black_win, board=black_four)
+        ok_games, ok_skipped = read_window(select_files(ok_dir, ("",), None), board)
+        ok_report = audit(ok_games)
+        assert ok_report["termination_games"] == 2, ok_report["termination_games"]
+        assert ok_report["termination_failures"] == [], ok_report["termination_failures"]
+        assert ok_report["forbidden_endings"] == 1, ok_report["forbidden_endings"]
+        assert print_report(ok_report, ok_skipped, 2, None, board) is False
 
         # a window too small to judge must say so instead of crying degeneracy
         one_dir = os.path.join(temp, "one_game")
         os.makedirs(one_dir)
-        write_game(os.path.join(one_dir, "data_0_11111111"), 1, white_win)
+        write_game(os.path.join(one_dir, "data_0_11111111"), 1, white_win, board=white_four)
         one_games, one_skipped = read_window(select_files(one_dir, ("",), None), board)
         assert print_report(audit(one_games), one_skipped, 1, 1, board) is False
 
@@ -443,6 +686,8 @@ def main(argv=None):
     parser.add_argument("--all", action="store_true", help="audit every file in the window")
     parser.add_argument("--include-archive", action="store_true",
                         help="also read data_archive/ (the learner's short-window fallback)")
+    parser.add_argument("--no-termination-check", action="store_true",
+                        help="skip verifying that each game ends the way its labels say")
     parser.add_argument("--expect-rule", type=int, default=None,
                         help="the rule flag config['rule'] expects; mixed headers are reported")
     parser.add_argument("--board", type=int, default=15, help="board size (default 15)")
@@ -468,7 +713,8 @@ def main(argv=None):
         print(f"no data files under {build_dir}/{{{','.join(folders)}}}: nothing to audit")
         return 0
 
-    games, skipped = read_window(selected, args.board)
+    games, skipped = read_window(selected, args.board,
+                                 verify_termination=not args.no_termination_check)
     degenerate = print_report(
         audit(games), skipped, len(selected), args.expect_rule, args.board
     )

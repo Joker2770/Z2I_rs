@@ -476,6 +476,26 @@ cd train && python3 audit_labels.py --dir ../build --expect-rule 1
   a policy at all (a nearly uniform `pi` means the simulation count or the seed is the
   problem, not the data).
 
+It also verifies each game's **ending** against the position it was decided from. `play.rs`
+stores the position *before* the move about to be played at every ply, so the deciding move is
+not in the file -- but the ending is still pinned down: a positive label at the last stored ply
+must be an ordinary five (the position before it has to hold the four that completes it), a
+negative one means the mover lost on **their own** move, which only Renju allows (Black's
+forbidden move ends the game with White winning), and neither side may already hold a deciding
+line before that move. The aggregate label statistics cannot catch this class of error, because
+they are self-consistent by construction:
+
+```
+termination check: 38/40 game(s) end the way their labels say (...)
+  note: 2 game(s) ended with the mover losing on their own move -- Renju's forbidden-move loss
+  data_16_bbbbbbbb: labelled Black win on the last move, but the position before it holds no four for Black
+```
+
+That note is worth reading on a Renju build: a game that ends by Black's forbidden move labels
+every Black-to-move ply as "losing", so a window dominated by those games teaches a value head
+"whose turn is it" instead of "who is winning" -- the same colour-plane collapse the probe
+reports on the weight side. Use `--no-termination-check` to skip the pass.
+
 A window smaller than 5 readable games reports the statistics without a verdict, since a
 single game is always won by one colour. It exits 1 on a degenerate window, so it can gate a
 run, and `--self-test` round-trips synthetic windows (a learnable one, a single-colour one,

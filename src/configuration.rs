@@ -37,9 +37,9 @@ pub mod cfg {
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const N_IN_ROW: u8 = 5;
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const C_PUCT: f32 = 2.5;
+    pub const C_PUCT: f32 = 1.5;
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const C_VIRTUAL_LOSS: f64 = 3.0;
+    pub const C_VIRTUAL_LOSS: f64 = 1.0;
     // Colab T4: 2 vCPUs are the bottleneck, so the base simulation count is lowered;
     // it still grows with weight generation (SIMS_BOOST_*)
     #[cfg(not(feature = "tic-tac-toe"))]
