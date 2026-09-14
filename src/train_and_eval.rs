@@ -787,12 +787,77 @@ fn reject_candidate(best_weight: i32, message: &str) {
         .expect("Unable to write data");
 }
 
+/// What a rollback scan looked at.
+///
+/// One summary line per scan instead of one line per id: a window full of 3-channel legacy
+/// weights used to print 60 lines every round, which buries the single line that matters
+/// (nothing below best is usable).
+#[derive(Default)]
+struct RollbackScan {
+    missing: usize,
+    legacy: usize,
+    failed: Vec<i32>,
+    unreadable: Vec<i32>,
+    healthy: Option<(i32, ProbeReport)>,
+}
+
+impl RollbackScan {
+    fn checked(&self) -> usize {
+        self.missing + self.legacy + self.failed.len() + self.unreadable.len()
+    }
+
+    /// One line naming every reason the scan could not use an id.
+    fn summary(&self, from_id: i32, limit: usize) -> String {
+        let mut notes = Vec::new();
+        if self.legacy > 0 {
+            notes.push(format!(
+                "{} from another input layout (3-channel era: re-export them with \
+                 train/convert_model.py to use them again)",
+                self.legacy
+            ));
+        }
+        if self.missing > 0 {
+            notes.push(format!("{} with no weight file", self.missing));
+        }
+        if !self.failed.is_empty() {
+            notes.push(format!(
+                "{} below the probe bar ({})",
+                self.failed.len(),
+                id_list(&self.failed)
+            ));
+        }
+        if !self.unreadable.is_empty() {
+            notes.push(format!(
+                "{} unreadable ({})",
+                self.unreadable.len(),
+                id_list(&self.unreadable)
+            ));
+        }
+        format!(
+            "scanned {} of the {limit} id(s) below {from_id}: {}",
+            self.checked(),
+            if notes.is_empty() {
+                "all usable".to_string()
+            } else {
+                notes.join("; ")
+            }
+        )
+    }
+}
+
+/// Short, bounded rendering of an id list for a log line.
+fn id_list(ids: &[i32]) -> String {
+    let head: Vec<String> = ids.iter().take(4).map(i32::to_string).collect();
+    let mut text = head.join(", ");
+    if ids.len() > head.len() {
+        text.push_str(&format!(", ... ({} total)", ids.len()));
+    }
+    text
+}
+
 /// Find the newest checkpoint below `from_id` that still passes the probe.
-async fn newest_healthy_weight(
-    weights_dir: &Path,
-    from_id: i32,
-    limit: usize,
-) -> Option<(i32, ProbeReport)> {
+async fn scan_healthy_weight(weights_dir: &Path, from_id: i32, limit: usize) -> RollbackScan {
+    let mut scan = RollbackScan::default();
     for offset in 1..=limit as i32 {
         let candidate = from_id - offset;
         if candidate < 0 {
@@ -800,15 +865,22 @@ async fn newest_healthy_weight(
         }
         if !weights_dir.join(format!("{candidate}.onnx")).exists() {
             // a file that is not there is the normal shape of an already rolled-back round
+            scan.missing += 1;
             continue;
         }
         match probe_weight(weights_dir, candidate, cfg::DEFAULT_INTRA_THREAD_NUM).await {
-            Ok(report) if report.passed() => return Some((candidate, report)),
-            Ok(report) => println!("rollback scan: {candidate} {}", report.headline()),
-            Err(error) => println!("rollback scan: {candidate} skipped: {error}"),
+            Ok(report) if report.passed() => {
+                scan.healthy = Some((candidate, report));
+                break;
+            }
+            Ok(_) => scan.failed.push(candidate),
+            // the loader rejects a weight from another input layout by name, and such a
+            // weight can never pass: it needs a re-export, not another probe
+            Err(error) if error.contains("channels") => scan.legacy += 1,
+            Err(_) => scan.unreadable.push(candidate),
         }
     }
-    None
+    scan
 }
 
 /// Move best back to the newest healthy checkpoint when best itself is unusable.
@@ -830,11 +902,12 @@ async fn roll_back_best(weights_dir: &Path, best_weight: i32) -> Option<i32> {
         println!("rollback disabled (ROLLBACK_SCAN_LIMIT=0): best stays at {best_weight}");
         return None;
     }
-    let Some((healthy, report)) = newest_healthy_weight(weights_dir, best_weight, limit).await
-    else {
+    let scan = scan_healthy_weight(weights_dir, best_weight, limit).await;
+    let summary = scan.summary(best_weight, limit);
+    let Some((healthy, report)) = scan.healthy else {
         eprintln!(
-            "no healthy weight within {limit} id(s) below {best_weight}: this lineage needs a \
-             fresh seed (see README 'Weight probe')"
+            "no healthy weight below {best_weight}, so this lineage needs a fresh seed \
+             (see README 'Weight probe'): {summary}"
         );
         return None;
     };
@@ -860,6 +933,24 @@ async fn roll_back_best(weights_dir: &Path, best_weight: i32) -> Option<i32> {
         let _ = file.write_all(message.as_bytes());
     }
     Some(healthy)
+}
+
+/// Hard stop when best is unusable and the rollback has nothing to fall back to.
+///
+/// `train_loop.sh` runs under `set -e`, so a non-zero exit ends the round instead of spinning:
+/// generate refuses, the learner still trains on the stale window from the broken weight, the
+/// candidate is rejected, and the next round repeats exactly the same thing. Measured on a
+/// lineage whose best had a broken value head: every round burnt ~700 training steps and the
+/// candidate came back worse (`colour plane` collapse 1.998 after one round).
+/// `EVAL_SKIP_VERIFY=1` keeps the loop running for anyone who wants to watch that happen.
+fn stop_without_healthy_seed(best_weight: i32) -> ! {
+    eprintln!(
+        "STOP: best weight {best_weight} is unusable and nothing below it is healthy, so this \
+         lineage needs a fresh seed (README 'Weight probe'): hot-start from a weight that \
+         passes `verify_weight <id>`, then write `<seed> <seed>` into \
+         current_and_best_weight.txt."
+    );
+    std::process::exit(1);
 }
 
 /// Update both sides' Elo from one evaluation match result, returning a log description
@@ -962,7 +1053,12 @@ async fn main() {
                                  weight probe (EVAL_SKIP_VERIFY=1 to generate anyway)\n{}",
                                 report.summary()
                             );
-                            roll_back_best(&weights_dir, best_weight as i32).await;
+                            if roll_back_best(&weights_dir, best_weight as i32)
+                                .await
+                                .is_none()
+                            {
+                                stop_without_healthy_seed(best_weight as i32);
+                            }
                             return;
                         }
                         Err(error) => {
@@ -970,7 +1066,12 @@ async fn main() {
                                 "Refusing to generate: best weight {best_weight} cannot be used: \
                                  {error}\n(EVAL_SKIP_VERIFY=1 to generate anyway)"
                             );
-                            roll_back_best(&weights_dir, best_weight as i32).await;
+                            if roll_back_best(&weights_dir, best_weight as i32)
+                                .await
+                                .is_none()
+                            {
+                                stop_without_healthy_seed(best_weight as i32);
+                            }
                             return;
                         }
                     }
@@ -1404,6 +1505,27 @@ mod tests {
             }
         }
         stones
+    }
+
+    #[test]
+    fn a_rollback_scan_summary_names_every_reason() {
+        let mut scan = RollbackScan::default();
+        // the shape of the renju dir: 3-channel legacy weights, a couple of missing ids, and
+        // probed weights that are simply below the bar
+        scan.legacy = 11;
+        scan.missing = 2;
+        scan.failed = vec![1200, 1199];
+        let text = scan.summary(1157, 20);
+        assert!(text.contains("scanned 15 of the 20 id(s) below 1157"), "{text}");
+        assert!(text.contains("11 from another input layout"), "{text}");
+        assert!(text.contains("2 with no weight file"), "{text}");
+        assert!(text.contains("2 below the probe bar (1200, 1199)"), "{text}");
+
+        // an empty scan says so, and a long id list is truncated
+        let empty = RollbackScan::default();
+        assert!(empty.summary(10, 20).contains("all usable"), "{}", empty.summary(10, 20));
+        assert_eq!(id_list(&[1, 2, 3, 4, 5, 6]), "1, 2, 3, 4, ... (6 total)");
+        assert_eq!(id_list(&[7]), "7");
     }
 
     #[test]

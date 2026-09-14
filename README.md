@@ -316,8 +316,21 @@ WARNING: best weight 1107 also fails the probe; every candidate trained from it 
 Both `generate` and `eval_with_winner` therefore **move best back automatically**: the newest
 id within `ROLLBACK_SCAN_LIMIT` (default 20, one probe each; `0` disables it) below the
 failing best that still passes the probe becomes the new best (`<healthy> <healthy>`), and
-the ids in between are retrained from there. When nothing in the window is healthy the run
-says so and leaves the counter alone -- that lineage needs a fresh seed, not another round.
+the ids in between are retrained from there.
+
+When nothing below best is usable, the scan reports one summary line naming every reason (an
+old 3-channel weight needs a re-export with `train/convert_model.py`, a missing file is just
+missing, a probed weight is below the bar) and `generate` **exits non-zero**: under the
+`set -e` of `train_loop.sh` the round ends instead of spinning, because a broken best makes
+every round identical -- generate refuses, the learner still trains on the stale window from
+the broken weight, and the candidate comes back worse (measured: `colour plane` collapse
+1.998 after one round, 17 rounds burnt on a lineage whose best had a broken value head).
+`EVAL_SKIP_VERIFY=1` keeps the loop running if you want to watch it anyway.
+
+```
+no healthy weight below 1157, so this lineage needs a fresh seed (see README 'Weight probe'): scanned 20 of the 20 id(s) below 1157: 11 from another input layout (3-channel era: re-export them with train/convert_model.py to use them again); 9 with no weight file
+STOP: best weight 1157 is unusable and nothing below it is healthy, ...
+```
 
 Note that a 128-sim screen is shallow (only 8 inference batches per move), so it punishes a
 diffuse policy harder than a real game would: a candidate that passes the probe but scores
