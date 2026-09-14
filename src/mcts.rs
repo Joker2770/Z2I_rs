@@ -1042,6 +1042,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn nothing_playable_produces_the_max_sentinel_and_an_all_zero_policy() {
+        use crate::rule::RuleFlag;
+
+        let stones = crate::gomoku::renju_all_empties_forbidden_stones();
+        let mut game = Gomoku::new(15, 5).expect("valid test board");
+        assert!(game.set_rule(RuleFlag::Renju));
+        assert!(game.load_position(&stones, Color::Black));
+
+        let mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(16), 1, game.get_action_size());
+
+        assert_eq!(
+            mcts.get_best_action(&game).await,
+            u16::MAX,
+            "there is no playable point to select"
+        );
+        assert!(!game.execute_move(u16::MAX), "the sentinel is not a legal move");
+
+        let probs = mcts.get_action_probs(&game, 1.0).await;
+        assert!(
+            probs.iter().all(|p| *p == 0.0),
+            "nothing could be expanded, so the policy says nothing"
+        );
+
+        // self-play samples the policy, and an all-zero policy falls back to point 0; here that
+        // point is occupied, so the loop bails out of a game the judge still calls running
+        assert_eq!(mcts.get_action_by_sample(&probs), 0);
+        assert!(!game.execute_move(0));
+        assert_eq!(*game.get_game_status(), (GameStage::Running, Color::Blank));
+
+        // an evaluation game cannot advance either: `update_root_with_action` rejects the
+        // sentinel, so the eval loop sees the same running status on every pass
+        let mut mcts = MCTS::new(None, 1.0, 3.0, AtomicUsize::new(1), 1, game.get_action_size());
+        assert!(!mcts.update_root_with_action(&game, u16::MAX));
+    }
+
+    #[tokio::test]
     async fn past_deadline_still_runs_one_simulation() {
         let game = Gomoku::new(15, 5).expect("valid test board");
         let mcts = MCTS::new(

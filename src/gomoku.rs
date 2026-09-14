@@ -517,6 +517,53 @@ impl Gomoku {
     }
 }
 
+/// A 15x15 Renju position whose **only** empty point is forbidden for the side to move.
+///
+/// Every cell is occupied except `(0, 4)`, and placing a Black stone there would complete eight
+/// in a row (an overline), which `RenjuJudge::is_legal` rejects. The position is still running
+/// (no five anywhere, Black to move), so a caller asking "where can I play?" gets an empty
+/// playable set while the game status says `Running`: the state the engine has no move for.
+///
+/// The filling is `white = (row + 2 * col) % 8 < 4`, which is five-free in every direction --
+/// five consecutive collinear cells always hold five different residues mod 8, so no direction
+/// can ever collect five of one colour. It leaves 116 Black and 108 White stones, so four Black
+/// stones in row 14 turn White to make the counts equal (Black to move).
+#[cfg(test)]
+pub(crate) fn renju_all_empties_forbidden_stones() -> Vec<(u16, Color)> {
+    const SIZE: u16 = 15;
+    // row 0 holds Black at 0,1,2,3 and 5..7, so the gap at (0, 4) completes an overline
+    const BLACK_STRUCTURE: [u16; 5] = [0, 1, 2, 3, 5];
+    // four stones of row 14 that the filling makes Black but the stone counts need White
+    const WHITE_OVERRIDES: [(u16, u16); 4] = [(14, 0), (14, 4), (14, 8), (14, 12)];
+    const EMPTY: (u16, u16) = (0, 4);
+
+    let mut white = Vec::new();
+    let mut black = Vec::new();
+    for row in 0..SIZE {
+        for col in 0..SIZE {
+            if (row, col) == EMPTY {
+                continue;
+            }
+            let is_white = (row + 2 * col) % 8 < 4 || WHITE_OVERRIDES.contains(&(row, col));
+            let is_black = !is_white || (row == 0 && BLACK_STRUCTURE.contains(&col));
+            let action = row * SIZE + col;
+            if is_black {
+                black.push(action);
+            } else {
+                white.push(action);
+            }
+        }
+    }
+    assert_eq!(black.len(), white.len(), "Black must be the side to move");
+    assert_eq!(black.len() + white.len(), 224, "one empty point is all that is left");
+
+    // Black first: `load_position` takes the last entry as `last_move`, and a White stone can
+    // never be a forbidden move, so the fixture starts in `Running` instead of an ended game
+    let mut stones: Vec<(u16, Color)> = black.into_iter().map(|a| (a, Color::Black)).collect();
+    stones.extend(white.into_iter().map(|a| (a, Color::White)));
+    stones
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -615,6 +662,33 @@ mod tests {
             1,
             "White may play the point that is forbidden for Black"
         );
+    }
+
+    #[test]
+    fn a_position_whose_only_empty_point_is_forbidden_has_nothing_playable() {
+        let stones = renju_all_empties_forbidden_stones();
+
+        // the same stones under a rule without forbidden moves keep the point playable, so the
+        // empty set below is the judge's doing and not an odd fixture
+        let mut free = Gomoku::new(15, 5).expect("valid test board");
+        assert!(free.set_rule(RuleFlag::FreeStyle));
+        assert!(free.load_position(&stones, Color::Black));
+        assert_eq!(free.get_legal_moves().iter().filter(|m| **m == 1).count(), 1);
+
+        let mut game = Gomoku::new(15, 5).expect("valid test board");
+        assert!(game.set_rule(RuleFlag::Renju));
+        assert!(game.load_position(&stones, Color::Black));
+
+        // the position itself is alive -- the game is not over, there is simply nowhere to go
+        assert_eq!(*game.get_game_status(), (GameStage::Running, Color::Blank));
+        assert_eq!(game.get_legal_moves().iter().filter(|m| **m == 1).count(), 0);
+        assert_eq!(
+            game.refresh_playable_moves(),
+            0,
+            "load_position already refreshed the set"
+        );
+        assert_eq!(game.get_legal_moves().iter().filter(|m| **m == 1).count(), 0);
+        assert!(!game.ended_by_forbidden_move(), "no forbidden move was played");
     }
 
     #[test]
