@@ -163,6 +163,20 @@ pub async fn generate_data_for_train(cur_weight_id: u16, start_batch_id: u16) {
                 eprintln!("Self play thread error: {}", error);
             }
         }
+        // Regression guard: with the playable set refreshed before every search this stays 0.
+        // A non-zero count means the engine played a point the judge forbids (Renju Black),
+        // which ends the game with White winning and poisons the value labels of that window.
+        let forbidden_endings = play::take_forbidden_move_endings();
+        if forbidden_endings > 0 {
+            eprintln!(
+                "WARNING: {forbidden_endings} self-play game(s) ended by the mover's own \
+                 forbidden move (Renju Black playing a point the judge rejects): those games \
+                 label every Black-to-move ply as losing -- check the rule and the playable-set \
+                 refresh before training on this window"
+            );
+        } else {
+            println!("Self play: no forbidden-move endings");
+        }
     } else {
         eprintln!("Can not find current folder!!!");
     }
@@ -255,6 +269,9 @@ async fn play_eval_game(setup: EvalGame<'_>) -> Option<(u16, u16, u16)> {
         } else {
             step % 2 != 0
         };
+        // the side to move may have forbidden points (Renju Black): both searches and the
+        // move selection must see the same legal set the judge uses (a no-op for other rules)
+        g_ref.borrow_mut().refresh_playable_moves();
         let best_action = if is_a_turn {
             ma.get_best_action(&g_ref.borrow()).await
         } else {
@@ -431,11 +448,7 @@ fn load_eval_model(
         return Ok(None);
     }
     let model_path = weights_dir.join(format!("{weight_id}.onnx"));
-    match NeuralNetwork::new(
-        &model_path,
-        cfg::MAX_BATCH_SIZE as usize,
-        intra_thread_num,
-    ) {
+    match NeuralNetwork::new(&model_path, cfg::MAX_BATCH_SIZE as usize, intra_thread_num) {
         Ok(model) => Ok(Some(Rc::new(RefCell::new(model)))),
         Err(error) => Err(format!(
             "load weight {weight_id} from {} error: {error}",
@@ -537,7 +550,9 @@ async fn collect_eval_games(
     // rendering only survives the single-worker path
     let do_render = cfg::RENDER_AT_EVAL && workers == 1;
     if cfg::RENDER_AT_EVAL && workers > 1 {
-        println!("Eval: board rendering disabled while running {workers} workers (set EVAL_WORKERS=1 to see the boards)");
+        println!(
+            "Eval: board rendering disabled while running {workers} workers (set EVAL_WORKERS=1 to see the boards)"
+        );
     }
 
     let mut handles = Vec::with_capacity(workers);
@@ -1007,7 +1022,11 @@ async fn main() {
         if !std::path::Path::new(openings::OPENING_FILE).exists() {
             let book = openings::default_openings(cfg::BOARD_SIZE, cfg::N_IN_ROW);
             _ = fs::write(openings::OPENING_FILE, openings::format_book(&book));
-            println!("Wrote {} with {} opening(s).", openings::OPENING_FILE, book.len());
+            println!(
+                "Wrote {} with {} opening(s).",
+                openings::OPENING_FILE,
+                book.len()
+            );
         }
         println!("Next: Generate initial weight by python.");
     } else if args[1] == "generate" && args.len() == 3 {
@@ -1041,8 +1060,12 @@ async fn main() {
                     let weights_dir = env::current_dir()
                         .expect("Unable to get current folder")
                         .join("weights");
-                    match probe_weight(&weights_dir, best_weight as i32, cfg::DEFAULT_INTRA_THREAD_NUM)
-                        .await
+                    match probe_weight(
+                        &weights_dir,
+                        best_weight as i32,
+                        cfg::DEFAULT_INTRA_THREAD_NUM,
+                    )
+                    .await
                     {
                         Ok(report) if report.passed() => {
                             println!("best {best_weight} {}", report.headline());
@@ -1128,37 +1151,40 @@ async fn main() {
             // policy and would lose every game, which is expensive to discover and easy to
             // mistake for a real regression. The probe costs about a second.
             if !skip_verify() {
-                let (report_text, rejection, candidate_sharpness) =
-                    match probe_weight(&weights_dir, current_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
-                        .await
-                    {
-                        Ok(report) => {
-                            let text = report.summary();
-                            if report.passed() {
-                                (text, None, Some(report.sharpness))
-                            } else {
-                                let failed: Vec<String> = report
-                                    .failures()
-                                    .iter()
-                                    .map(|criterion| criterion.name.clone())
-                                    .collect();
-                                (
-                                    text,
-                                    Some(format!(
-                                        "weight probe failed: {} (EVAL_SKIP_VERIFY=1 to evaluate anyway)",
-                                        failed.join(", ")
-                                    )),
-                                    None,
-                                )
-                            }
+                let (report_text, rejection, candidate_sharpness) = match probe_weight(
+                    &weights_dir,
+                    current_weight,
+                    cfg::DEFAULT_INTRA_THREAD_NUM,
+                )
+                .await
+                {
+                    Ok(report) => {
+                        let text = report.summary();
+                        if report.passed() {
+                            (text, None, Some(report.sharpness))
+                        } else {
+                            let failed: Vec<String> = report
+                                .failures()
+                                .iter()
+                                .map(|criterion| criterion.name.clone())
+                                .collect();
+                            (
+                                text,
+                                Some(format!(
+                                    "weight probe failed: {} (EVAL_SKIP_VERIFY=1 to evaluate anyway)",
+                                    failed.join(", ")
+                                )),
+                                None,
+                            )
                         }
-                        // a weight that cannot even be probed must not become best
-                        Err(error) => (
-                            format!("weight probe could not run: {error}\n"),
-                            Some(error),
-                            None,
-                        ),
-                    };
+                    }
+                    // a weight that cannot even be probed must not become best
+                    Err(error) => (
+                        format!("weight probe could not run: {error}\n"),
+                        Some(error),
+                        None,
+                    ),
+                };
                 print!("{report_text}");
                 if let Some(reason) = rejection {
                     reject_candidate(
@@ -1173,22 +1199,25 @@ async fn main() {
                 // itself fails, every candidate trained from it will look broken, which this
                 // warning makes visible.
                 if current_weight != best_weight {
-                    let best_report =
-                        match probe_weight(&weights_dir, best_weight, cfg::DEFAULT_INTRA_THREAD_NUM)
-                            .await
-                        {
-                            Ok(report) => report,
-                            // An unreadable best is the same deadlock as a failing one: no data
-                            // can be generated from it and no game can be played against it, so
-                            // roll back instead of reporting a candidate against a phantom (this
-                            // is also the shape a half-written or vanished weight file takes on a
-                            // synced Drive work dir).
-                            Err(error) => {
-                                eprintln!("best weight {best_weight} cannot be probed: {error}");
-                                roll_back_best(&weights_dir, best_weight).await;
-                                return;
-                            }
-                        };
+                    let best_report = match probe_weight(
+                        &weights_dir,
+                        best_weight,
+                        cfg::DEFAULT_INTRA_THREAD_NUM,
+                    )
+                    .await
+                    {
+                        Ok(report) => report,
+                        // An unreadable best is the same deadlock as a failing one: no data
+                        // can be generated from it and no game can be played against it, so
+                        // roll back instead of reporting a candidate against a phantom (this
+                        // is also the shape a half-written or vanished weight file takes on a
+                        // synced Drive work dir).
+                        Err(error) => {
+                            eprintln!("best weight {best_weight} cannot be probed: {error}");
+                            roll_back_best(&weights_dir, best_weight).await;
+                            return;
+                        }
+                    };
                     println!("best {} {}", best_weight, best_report.headline());
                     // policy sharpness is a proxy, not a verdict: a candidate that is far
                     // flatter than best usually trained on too little data, which the learner
@@ -1516,14 +1545,24 @@ mod tests {
         scan.missing = 2;
         scan.failed = vec![1200, 1199];
         let text = scan.summary(1157, 20);
-        assert!(text.contains("scanned 15 of the 20 id(s) below 1157"), "{text}");
+        assert!(
+            text.contains("scanned 15 of the 20 id(s) below 1157"),
+            "{text}"
+        );
         assert!(text.contains("11 from another input layout"), "{text}");
         assert!(text.contains("2 with no weight file"), "{text}");
-        assert!(text.contains("2 below the probe bar (1200, 1199)"), "{text}");
+        assert!(
+            text.contains("2 below the probe bar (1200, 1199)"),
+            "{text}"
+        );
 
         // an empty scan says so, and a long id list is truncated
         let empty = RollbackScan::default();
-        assert!(empty.summary(10, 20).contains("all usable"), "{}", empty.summary(10, 20));
+        assert!(
+            empty.summary(10, 20).contains("all usable"),
+            "{}",
+            empty.summary(10, 20)
+        );
         assert_eq!(id_list(&[1, 2, 3, 4, 5, 6]), "1, 2, 3, 4, ... (6 total)");
         assert_eq!(id_list(&[7]), "7");
     }
@@ -1569,7 +1608,8 @@ mod tests {
         first_stones.sort_by_key(|&(index, _)| index);
         second_stones.sort_by_key(|&(index, _)| index);
         assert_eq!(first_stones.len(), second_stones.len());
-        for ((index_a, color_a), (index_b, color_b)) in first_stones.iter().zip(second_stones.iter())
+        for ((index_a, color_a), (index_b, color_b)) in
+            first_stones.iter().zip(second_stones.iter())
         {
             assert_eq!(index_a, index_b, "the pair uses the same points");
             assert_ne!(color_a, color_b, "the pair must exchange the colours");
@@ -1684,7 +1724,10 @@ mod tests {
         // workers load their own sessions, which is what the parallel path relies on
         let outcome = run_eval_games(weights_dir, 1205, 1205, &games, 4, 4).await;
 
-        assert!(outcome.complete, "both games of the pair must produce a result");
+        assert!(
+            outcome.complete,
+            "both games of the pair must produce a result"
+        );
         assert_eq!(
             outcome.a_win + outcome.b_win + outcome.draw,
             2,

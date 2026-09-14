@@ -25,6 +25,11 @@
 #                weight probe (default 20, one probe each; 0 keeps best where it is)
 #   EVAL_SKIP_VERIFY=1   bypass the weight probe (diagnostics only)
 #   EVAL_ALLOW_SELF_MATCH=1  evaluate a weight against itself (diagnostics only)
+#   SELFPLAY_DROP_FORBIDDEN=1  drop self-play games that end by the mover's own forbidden
+#                move (Renju). The engine no longer plays one (see README "Renju legality in
+#                self-play"), so the "no forbidden-move endings" line after each generate
+#                round is the signal to read; set this only while cleaning a poisoned lineage,
+#                since a window made of those games would starve instead of training.
 #   STEP         batch id step per round, default 16 (= NUM_2_SELF_PLAY in src/configuration.rs)
 set -euo pipefail
 

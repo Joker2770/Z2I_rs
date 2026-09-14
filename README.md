@@ -515,6 +515,41 @@ run, and `--self-test` round-trips synthetic windows (a learnable one, a single-
 an undecided one) without touching the work dir. `--files N` (default 40), `--all` and
 `--include-archive` select the window exactly like the learner does.
 
+### Renju legality in self-play
+
+The playable table `Gomoku` hands to the search only encodes "empty cell" (`load_position` and
+`execute_move`). Renju's forbidden moves are not in it, so without help the search priors, the
+Dirichlet noise, the stored target π and the move actually played all disagreed with the
+`RenjuJudge` that decides the game: a Black move the judge rejects ends the game with White
+winning, which is the "the mover loses on its own move" ending the label audit notes. A window
+made of those games labels every Black-to-move ply as losing, so the value head is trained on
+`v = f(side to move)` and collapses onto the constant colour plane the probe reports.
+
+`Gomoku::refresh_playable_moves` closes that gap by asking the same `RenjuJudge::is_legal` the
+judge asks and clearing the points it rejects:
+
+- it is called before every search and after every move -- in self-play (`play.rs`), in
+  evaluation (`train_and_eval.rs`) and in the protocol engine (`main.rs`), including after the
+  opponent's move so background pondering starts from a correct root;
+- it only does work when the rule contains Renju **and** Black is to move. White has no
+  forbidden moves and no other rule has any, so FreeStyle, Standard, Caro and Standard+Caro are
+  bit-for-bit unchanged (the playable set the filter sees is then a superset of the explored
+  children, so nothing is dropped);
+- it costs one `is_legal` pass over the empty points per decision point, not per simulation:
+  the search keeps using the cheap table on its own clones.
+
+Each `generate` round now reports what it saw, so a regression cannot hide:
+
+```
+Self play: no forbidden-move endings
+```
+
+A non-zero `WARNING: N self-play game(s) ended by the mover's own forbidden move ...` means the
+search and the judge have drifted apart again (or the work dir still holds files written before
+the fix). Such a game is still written by default, because dropping it hides the signal;
+`SELFPLAY_DROP_FORBIDDEN=1` drops it instead, which is only useful while a poisoned lineage is
+still being cleaned -- a window made mostly of those games would then starve rather than train.
+
 ### ORT Training
 
 The Rust training entry needs ONNX Runtime Training artifacts, not ordinary inference models. The artifact directory must contain:

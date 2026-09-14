@@ -260,6 +260,76 @@ impl Gomoku {
         }
     }
 
+    /// Remove the points the active rule forbids **the side to move** from the playable set.
+    ///
+    /// The stored table only encodes "empty cell" (`load_position`, `execute_move`): nothing in
+    /// it knows about Renju's forbidden moves, so without this the search priors, the Dirichlet
+    /// noise, the stored training target and the move actually played all disagree with the
+    /// judge that decides the game. A Black move the judge rejects ends the game with White
+    /// winning (`CheckResult::value`), i.e. the "mover loses on its own move" ending that turns
+    /// the value labels into a function of the side to move and collapses a value head onto the
+    /// colour plane.
+    ///
+    /// It asks the same `RenjuJudge::is_legal` the judge asks, so the two cannot disagree.
+    /// Only Renju with Black to move does any work: every other rule (and White to move under
+    /// Renju, since White has no forbidden moves) returns immediately with the table untouched,
+    /// which keeps those rules bit-for-bit as they were.
+    ///
+    /// Call it once per move, before starting a search and after `execute_move`: it costs one
+    /// `is_legal` pass over the empty points, which is a decision-point price, not a per-node
+    /// one -- the search keeps using the cheap table on its own clones.
+    ///
+    /// Returns how many points were removed.
+    pub fn refresh_playable_moves(&mut self) -> usize {
+        if !self.rule_flag.contains(RuleFlag::Renju) || self.cur_color != Color::Black {
+            return 0;
+        }
+        let size = self.board_size as usize;
+        let mut forbidden = 0usize;
+        for index in 0..self.legal_moves_hash_tab.len() {
+            if self.legal_moves_hash_tab[index] != 1 {
+                continue;
+            }
+            let (row, col) = (index / size, index % size);
+            // `RenjuJudge::is_legal` looks at the stone that is already on the board at the
+            // point, so the candidate has to be placed for the question to mean anything. It is
+            // a pure query: the board goes back to Blank right after, and the judge only
+            // remembers the pattern it saw.
+            self.board[row][col] = Color::Black;
+            let is_legal = match self.check_result.rule_grp.renju_obj {
+                Some(ref mut judge) => judge.is_legal(&self.board, index as i16),
+                None => {
+                    let mut judge = RenjuJudge::new();
+                    let is_legal = judge.is_legal(&self.board, index as i16);
+                    self.check_result.rule_grp.renju_obj = Some(judge);
+                    is_legal
+                }
+            };
+            self.board[row][col] = Color::Blank;
+            if !is_legal {
+                self.legal_moves_hash_tab[index] = 0;
+                forbidden += 1;
+            }
+        }
+        forbidden
+    }
+
+    /// Whether this finished game was decided by the mover's own forbidden move.
+    ///
+    /// Under Renju a forbidden Black move ends the game with White as the winner, which the
+    /// status alone cannot tell apart from a White five; the board can: a five is always
+    /// completed by the winner's own stone, so a White win whose last stone is Black's can only
+    /// come from the forbidden-move rule. Read it after `get_game_status`.
+    pub fn ended_by_forbidden_move(&self) -> bool {
+        let (stage, winner) = self.check_result.chk_rst;
+        if stage != GameStage::End || winner != Color::White || self.last_move < 0 {
+            return false;
+        }
+        let size = self.board_size as usize;
+        let index = self.last_move as usize;
+        self.board[index / size][index % size] == Color::Black
+    }
+
     pub fn set_rule(&mut self, rule_flag: RuleFlag) -> bool {
         if -1 == self.last_move {
             self.rule_flag = rule_flag;
@@ -294,6 +364,9 @@ impl Gomoku {
         self.last_move = stones.last().map_or(-1, |(move_idx, _)| *move_idx as i16);
         self.cur_color = next_color;
         self.check_result = CheckResult::new();
+        // the side to move may have forbidden points (Renju Black): make the playable set agree
+        // with the judge from the start instead of only after the first search refresh
+        self.refresh_playable_moves();
         true
     }
 
@@ -462,6 +535,119 @@ mod tests {
         gomoku.last_move = 5;
         let expected = ". . . .\n. O . .\n. . . .\n. . . .\n";
         assert_eq!(gomoku.render_to_string(), expected);
+    }
+
+    /// The Renju double-four shape the judge rejects: six Black stones on row 7 leave `(7, 4)`
+    /// as the point that would complete two fours at once, i.e. a forbidden move.
+    /// Six White stones keep the stone counts even, so White has just moved and Black is up;
+    /// they are spread out because six in a row would already be an overline win for White and
+    /// the position would not be a live decision point any more.
+    const FORBIDDEN_POINT: u16 = 7 * 15 + 4;
+
+    fn double_four_stones() -> Vec<(u16, Color)> {
+        let mut stones = Vec::new();
+        for col in [0u16, 1, 3, 5, 7, 8] {
+            stones.push((7 * 15 + col, Color::Black));
+        }
+        for col in [0u16, 2, 4, 6, 8, 10] {
+            stones.push((col, Color::White));
+        }
+        stones
+    }
+
+    fn renju_game(stones: &[(u16, Color)], next_color: Color) -> Gomoku {
+        let mut game = Gomoku::new(15, 5).expect("valid test board");
+        assert!(game.set_rule(RuleFlag::Renju));
+        assert!(game.load_position(stones, next_color));
+        game
+    }
+
+    #[test]
+    fn refresh_playable_moves_is_a_no_op_without_forbidden_moves() {
+        let stones = double_four_stones();
+        for rule in [RuleFlag::FreeStyle, RuleFlag::Standard, RuleFlag::Caro] {
+            let mut game = Gomoku::new(15, 5).expect("valid test board");
+            assert!(game.set_rule(rule));
+            assert!(game.load_position(&stones, Color::Black));
+            let before = game.get_legal_moves().clone();
+
+            assert_eq!(game.refresh_playable_moves(), 0, "{rule:?} does no work");
+            assert_eq!(
+                game.get_legal_moves()[FORBIDDEN_POINT as usize],
+                1,
+                "{rule:?} has no forbidden moves, so the point stays playable"
+            );
+            assert_eq!(*game.get_legal_moves(), before, "{rule:?} is untouched");
+        }
+    }
+
+    #[test]
+    fn refresh_playable_moves_removes_only_renju_black_forbidden_points() {
+        let stones = double_four_stones();
+
+        // Black to move: the double-four point is gone and the refresh is idempotent.
+        let black = renju_game(&stones, Color::Black);
+        assert_eq!(
+            black.get_legal_moves()[FORBIDDEN_POINT as usize],
+            0,
+            "the judge forbids it for Black"
+        );
+        let playable = black.get_legal_moves().iter().filter(|m| **m == 1).count();
+        let removable = 15 * 15 - stones.len() - playable;
+        assert!(
+            removable >= 1,
+            "at least the double-four point must be removed"
+        );
+        let mut black = black;
+        assert_eq!(
+            black.refresh_playable_moves(),
+            0,
+            "a second pass changes nothing"
+        );
+        assert_eq!(black.get_legal_moves()[FORBIDDEN_POINT as usize], 0);
+
+        // White to move on the same shape: White has no forbidden moves at all.
+        let mut white_stones = stones.clone();
+        white_stones.push((14 * 15, Color::Black));
+        let white = renju_game(&white_stones, Color::White);
+        assert_eq!(
+            white.get_legal_moves()[FORBIDDEN_POINT as usize],
+            1,
+            "White may play the point that is forbidden for Black"
+        );
+    }
+
+    #[test]
+    fn ended_by_forbidden_move_tells_apart_losses_from_fives() {
+        let stones = double_four_stones();
+        let mut game = renju_game(&stones, Color::Black);
+        // `execute_move` only knows about occupancy, so the forbidden point lands on the board
+        // exactly like it did in the poisoned self-play games; the judge then ends the game
+        // with White winning.
+        assert!(game.execute_move(FORBIDDEN_POINT));
+        assert_eq!(*game.get_game_status(), (GameStage::End, Color::White));
+        assert!(
+            game.ended_by_forbidden_move(),
+            "White won because Black's own move was forbidden"
+        );
+
+        // an ordinary five is not a forbidden-move ending, for either colour
+        for (color, expected_winner) in [(Color::White, Color::White), (Color::Black, Color::Black)]
+        {
+            let mut five = Gomoku::new(15, 5).expect("valid test board");
+            assert!(five.set_rule(RuleFlag::Renju));
+            for col in 0..5usize {
+                five.board[3][col] = color;
+            }
+            five.legal_moves_hash_tab[3 * 15 + 4] = 0;
+            five.sum_cur_actions = 10;
+            five.last_move = (3 * 15 + 4) as i16;
+            assert_eq!(*five.get_game_status(), (GameStage::End, expected_winner));
+            assert!(
+                !five.ended_by_forbidden_move(),
+                "a {color:?} five is an ordinary win"
+            );
+        }
     }
 
     #[test]

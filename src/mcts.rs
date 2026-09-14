@@ -176,19 +176,39 @@ pub struct MCTS {
 /// Convert a node's children visit counts into a policy vector.
 /// `temp == 1.0` yields the raw search distribution π(a) ∝ N(a) — the AlphaZero
 /// training target — while smaller `temp` sharpens it toward the argmax.
-fn policy_from_children(children: &[Rc<MCTSNode>], action_size: usize, temp: f64) -> Vec<f64> {
+///
+/// `playable` is the game's playable set (see `Gomoku::refresh_playable_moves`): children the
+/// rule forbids for the side to move are dropped, so neither the stored target nor the action
+/// that gets sampled can contain a forbidden point. A reused subtree can still hold such a
+/// child (it was expanded when the point was still allowed), which is why the filter belongs
+/// here and not only where children are created. For a rule without forbidden moves the set is
+/// a superset of the children, so the filter changes nothing.
+fn policy_from_children(
+    children: &[Rc<MCTSNode>],
+    playable: &[u8],
+    action_size: usize,
+    temp: f64,
+) -> Vec<f64> {
     let mut action_probs = vec![0.0; action_size];
+    let candidates: Vec<&Rc<MCTSNode>> = children
+        .iter()
+        .filter(|c| {
+            playable
+                .get(c.action as usize)
+                .is_some_and(|allowed| *allowed == 1)
+        })
+        .collect();
 
     // greedy
     if (temp - cfg::GREEDY_TEMP).abs() < f64::EPSILON {
         let mut best_action = u16::MAX;
         let mut most_visits = 0;
-        for c in children.iter() {
+        for c in candidates.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v > most_visits
                 || (c_v == most_visits
                     && c.prior_probs
-                        > children
+                        > candidates
                             .iter()
                             .find(|candidate| candidate.action == best_action)
                             .map_or(-1.0, |candidate| candidate.prior_probs))
@@ -198,7 +218,7 @@ fn policy_from_children(children: &[Rc<MCTSNode>], action_size: usize, temp: f64
             }
         }
 
-        if !children.is_empty() {
+        if !candidates.is_empty() {
             action_probs[best_action as usize] = 1.0;
         }
     }
@@ -210,7 +230,7 @@ fn policy_from_children(children: &[Rc<MCTSNode>], action_size: usize, temp: f64
         let inv_temp = (1.0).div(temp);
         let mut log_probs = vec![f64::NEG_INFINITY; action_size];
         let mut max_log_prob = f64::NEG_INFINITY;
-        for c in children.iter() {
+        for c in candidates.iter() {
             let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v > 0 {
                 let log_prob = inv_temp * (c_v as f64).ln();
@@ -230,12 +250,31 @@ fn policy_from_children(children: &[Rc<MCTSNode>], action_size: usize, temp: f64
         if sum > f64::EPSILON {
             action_probs.iter_mut().for_each(|x| *x = x.div(sum));
         } else {
-            for c in children.iter() {
+            for c in candidates.iter() {
                 action_probs[c.action as usize] = c.prior_probs;
             }
             let prior_sum: f64 = action_probs.iter().sum();
             if prior_sum > f64::EPSILON {
                 action_probs.iter_mut().for_each(|x| *x = x.div(prior_sum));
+            }
+        }
+    }
+
+    // Degenerate case: children were explored, but every one of them is forbidden for the side
+    // to move. Fall back to a uniform choice over the playable points so a caller can never
+    // sample an action the rule rejects. An empty child list still reports zeros: nothing was
+    // searched, so there is nothing to say about the position.
+    if !children.is_empty() && action_probs.iter().all(|probability| *probability == 0.0) {
+        let allowed = playable
+            .iter()
+            .take(action_size)
+            .filter(|value| **value == 1)
+            .count();
+        if allowed > 0 {
+            for (index, allowed_flag) in playable.iter().enumerate().take(action_size) {
+                if *allowed_flag == 1 {
+                    action_probs[index] = 1.0 / allowed as f64;
+                }
             }
         }
     }
@@ -419,7 +458,12 @@ impl MCTS {
 
         let root = self.root.borrow();
         let children = root.children.borrow();
-        policy_from_children(&children, gomoku.get_action_size() as usize, temp)
+        policy_from_children(
+            &children,
+            gomoku.get_legal_moves(),
+            gomoku.get_action_size() as usize,
+            temp,
+        )
     }
 
     /// Run one search and return the raw τ = 1 visit-count policy — the AlphaZero
@@ -447,8 +491,9 @@ impl MCTS {
         let action_size = gomoku.get_action_size() as usize;
         let root = self.root.borrow();
         let children = root.children.borrow();
-        let raw = policy_from_children(&children, action_size, 1.0);
-        let tempered = policy_from_children(&children, action_size, temp);
+        let playable = gomoku.get_legal_moves();
+        let raw = policy_from_children(&children, playable, action_size, 1.0);
+        let tempered = policy_from_children(&children, playable, action_size, temp);
         (raw, tempered)
     }
 
@@ -488,9 +533,14 @@ impl MCTS {
             return u16::MAX;
         }
 
+        let playable = gomoku.get_legal_moves();
         let mut best_action = u16::MAX;
         let mut most_visits = 0usize;
         for c in children.iter() {
+            // a reused child can hold a point the rule now forbids for the side to move
+            if playable.get(c.action as usize) != Some(&1) {
+                continue;
+            }
             let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v > most_visits
                 || (c_v == most_visits
@@ -502,6 +552,14 @@ impl MCTS {
             {
                 most_visits = c_v;
                 best_action = c.action;
+            }
+        }
+        if best_action == u16::MAX {
+            // nothing playable was explored: take the first point the rule allows
+            for (action, legal) in playable.iter().enumerate() {
+                if *legal == 1 {
+                    return action as u16;
+                }
             }
         }
         best_action
@@ -647,13 +705,24 @@ impl MCTS {
             return u16::MAX;
         }
 
+        let playable = gomoku.get_legal_moves();
         let mut best_action = u16::MAX;
         let mut most_visits = 0usize;
         for c in children.iter() {
+            if playable.get(c.action as usize) != Some(&1) {
+                continue;
+            }
             let c_v = c.visits.borrow().load(Ordering::SeqCst);
             if c_v >= most_visits {
                 most_visits = c_v;
                 best_action = c.action;
+            }
+        }
+        if best_action == u16::MAX {
+            for (action, legal) in playable.iter().enumerate() {
+                if *legal == 1 {
+                    return action as u16;
+                }
             }
         }
         best_action
@@ -1125,7 +1194,7 @@ mod tests {
             visited_child(2, 0, 0.2),
         ];
 
-        let probs = policy_from_children(&children, 3, 1.0);
+        let probs = policy_from_children(&children, &[1u8; 3], 3, 1.0);
 
         assert!((probs[0] - 2.0 / 3.0).abs() < 1e-12);
         assert!((probs[1] - 1.0 / 3.0).abs() < 1e-12);
@@ -1137,8 +1206,8 @@ mod tests {
     fn policy_from_children_smaller_temp_sharpens_the_distribution() {
         let children = vec![visited_child(0, 2, 0.9), visited_child(1, 1, 0.1)];
 
-        let raw = policy_from_children(&children, 3, 1.0);
-        let tempered = policy_from_children(&children, 3, 0.5);
+        let raw = policy_from_children(&children, &[1u8; 3], 3, 1.0);
+        let tempered = policy_from_children(&children, &[1u8; 3], 3, 0.5);
 
         // τ = 0.5 concentrates mass on the most-visited action.
         assert!(raw[0] < tempered[0]);
@@ -1153,20 +1222,118 @@ mod tests {
             visited_child(1, 1, 0.9),
             visited_child(2, 0, 0.5),
         ];
-        let greedy = policy_from_children(&children, 3, cfg::GREEDY_TEMP);
+        let greedy = policy_from_children(&children, &[1u8; 3], 3, cfg::GREEDY_TEMP);
         assert_eq!(greedy[1], 1.0);
         assert_eq!(greedy.iter().sum::<f64>(), 1.0);
 
         // clear majority: most-visited action wins
         let children = vec![visited_child(0, 5, 0.1), visited_child(1, 2, 0.9)];
-        let greedy = policy_from_children(&children, 2, cfg::GREEDY_TEMP);
+        let greedy = policy_from_children(&children, &[1u8; 2], 2, cfg::GREEDY_TEMP);
         assert_eq!(greedy[0], 1.0);
     }
 
     #[test]
     fn policy_from_children_with_no_children_returns_zeros() {
-        let probs = policy_from_children(&[], 4, 1.0);
+        let probs = policy_from_children(&[], &[1u8; 4], 4, 1.0);
         assert_eq!(probs, vec![0.0; 4]);
+    }
+
+    #[tokio::test]
+    async fn a_renju_forbidden_point_never_enters_the_policy_target() {
+        use crate::rule::RuleFlag;
+
+        // the double-four shape from `renju.rs`: (7, 4) is forbidden for Black to move.
+        // The White stones keep the counts even and the position running without forming a
+        // five or an overline of their own.
+        let mut game = Gomoku::new(15, 5).expect("valid test board");
+        assert!(game.set_rule(RuleFlag::Renju));
+        let mut stones = Vec::new();
+        for col in [0u16, 1, 3, 5, 7, 8] {
+            stones.push((7 * 15 + col, Color::Black));
+        }
+        for col in [0u16, 2, 4, 6, 8, 10] {
+            stones.push((col, Color::White));
+        }
+        assert!(game.load_position(&stones, Color::Black));
+        let forbidden = (7 * 15 + 4) as usize;
+        assert_eq!(game.get_legal_moves()[forbidden], 0);
+        assert_eq!(
+            game.get_game_status().0,
+            GameStage::Running,
+            "the fixture must be a live decision point, not a finished game"
+        );
+
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(64),
+            1,
+            game.get_action_size(),
+        );
+        let (raw, tempered) = mcts.get_raw_and_tempered_probs(&game, 1.0).await;
+
+        assert_eq!(
+            raw[forbidden], 0.0,
+            "the target must not point at a forbidden move"
+        );
+        assert_eq!(tempered[forbidden], 0.0);
+        assert!(
+            raw.iter().sum::<f64>() > 0.0,
+            "the mass must go to the legal points instead: children = {}, root_is_leaf = {}, \
+             playable = {}",
+            mcts.root.borrow().children.borrow().len(),
+            mcts.root_is_leaf(),
+            game.get_legal_moves().iter().filter(|m| **m == 1).count()
+        );
+
+        let action = mcts.get_best_action(&game).await as usize;
+        assert_eq!(
+            game.get_legal_moves()[action],
+            1,
+            "the played move must be legal"
+        );
+    }
+
+    #[test]
+    fn policy_from_children_drops_children_the_rule_forbids() {
+        // the most-visited child sits on a point the rule forbids for the side to move
+        let children = vec![visited_child(0, 5, 0.9), visited_child(1, 1, 0.1)];
+        let playable = [0u8, 1u8];
+
+        let probs = policy_from_children(&children, &playable, 2, 1.0);
+        assert_eq!(
+            probs[0], 0.0,
+            "a forbidden child must not receive target mass"
+        );
+        assert!((probs[1] - 1.0).abs() < 1e-12);
+
+        // ... and the greedy path must not pick it either
+        let greedy = policy_from_children(&children, &playable, 2, cfg::GREEDY_TEMP);
+        assert_eq!(greedy, vec![0.0, 1.0]);
+    }
+
+    #[test]
+    fn policy_from_children_falls_back_to_a_playable_uniform() {
+        // every explored child is forbidden: the caller still needs something legal to sample
+        let children = vec![visited_child(0, 5, 0.9), visited_child(1, 3, 0.5)];
+        let playable = [0u8, 0u8, 1u8];
+
+        assert_eq!(
+            policy_from_children(&children, &playable, 3, 1.0),
+            vec![0.0, 0.0, 1.0]
+        );
+    }
+
+    #[test]
+    fn a_fully_playable_set_changes_nothing() {
+        // what the table looks like for FreeStyle/Standard/Caro: every child is allowed, so the
+        // raw visit distribution is exactly what it was before the filter existed
+        let children = vec![visited_child(0, 2, 0.9), visited_child(1, 1, 0.1)];
+
+        let probs = policy_from_children(&children, &[1u8; 3], 3, 1.0);
+        assert!((probs[0] - 2.0 / 3.0).abs() < 1e-12, "{probs:?}");
+        assert!((probs[1] - 1.0 / 3.0).abs() < 1e-12, "{probs:?}");
     }
 
     #[tokio::test]

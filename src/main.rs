@@ -537,6 +537,12 @@ impl Brain {
     }
 
     async fn play_move(&mut self) -> Option<u16> {
+        // The side to move may have forbidden points (Renju Black): the search and the move
+        // selection must use the set the judge uses, otherwise the engine plays a point the
+        // judge rejects and loses on the spot. A no-op for every other rule.
+        if let Some(game) = self.game.as_mut() {
+            game.refresh_playable_moves();
+        }
         let game = self.game.as_ref()?;
         let mcts = self.mcts.as_ref()?;
         let deadline = self.think_deadline();
@@ -566,6 +572,11 @@ impl Brain {
             .game
             .as_mut()
             .is_some_and(|game| game.execute_move(action));
+        if is_succeed && let Some(game) = self.game.as_mut() {
+            // the opponent's move changed which points the rule forbids for us (Renju Black),
+            // and the ponder loop keeps searching from this root until our turn comes
+            game.refresh_playable_moves();
+        }
         if is_succeed
             && let Some(g) = self.game.as_ref()
             && let Some(m) = self.mcts.as_mut()

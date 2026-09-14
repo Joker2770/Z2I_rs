@@ -346,7 +346,11 @@ impl ProbeReport {
                 criterion.name,
                 if criterion.passed { "ok" } else { "FAIL" },
                 criterion.detail,
-                if criterion.critical { "" } else { " (advisory)" }
+                if criterion.critical {
+                    ""
+                } else {
+                    " (advisory)"
+                }
             ));
         }
         // Per-position answers: a value that is wrong on one shape and a value that is the
@@ -357,10 +361,7 @@ impl ProbeReport {
             for measurement in &self.measurements {
                 text.push_str(&format!(
                     "    {:<34} top1 {:<4} p={:.3} v={:+.3}\n",
-                    measurement.name,
-                    measurement.top1,
-                    measurement.top1_prob,
-                    measurement.value
+                    measurement.name, measurement.top1, measurement.top1_prob, measurement.value
                 ));
             }
         }
@@ -431,7 +432,10 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
             let shapes: Vec<String> = win_in_one
                 .iter()
                 .map(|m| {
-                    let label = m.name.trim_start_matches("win in one (").trim_end_matches(')');
+                    let label = m
+                        .name
+                        .trim_start_matches("win in one (")
+                        .trim_end_matches(')');
                     if m.expected == Some(m.top1) {
                         format!("{label} p={:.3}", m.top1_prob)
                     } else {
@@ -559,12 +563,8 @@ pub async fn probe_weight(
     if !model_path.exists() {
         return Err(format!("{} does not exist", model_path.display()));
     }
-    let network = NeuralNetwork::new(
-        &model_path,
-        cfg::MAX_BATCH_SIZE as usize,
-        intra_thread_num,
-    )
-    .map_err(|error| format!("load {} error: {error}", model_path.display()))?;
+    let network = NeuralNetwork::new(&model_path, cfg::MAX_BATCH_SIZE as usize, intra_thread_num)
+        .map_err(|error| format!("load {} error: {error}", model_path.display()))?;
 
     let started = Instant::now();
     let measurements = probe_positions(cfg::BOARD_SIZE, cfg::N_IN_ROW);
@@ -631,12 +631,13 @@ async fn infer(
 
 /// Fold one pass into a measurement.
 fn measurement_for(probe: &ProbePosition, probs: &[f64], value: f64) -> ProbeMeasurement {
-    let (top1, top1_prob) = probs
-        .iter()
-        .enumerate()
-        .fold((0usize, f64::NEG_INFINITY), |best, (index, prob)| {
-            if *prob > best.1 { (index, *prob) } else { best }
-        });
+    let (top1, top1_prob) =
+        probs
+            .iter()
+            .enumerate()
+            .fold((0usize, f64::NEG_INFINITY), |best, (index, prob)| {
+                if *prob > best.1 { (index, *prob) } else { best }
+            });
     ProbeMeasurement {
         name: probe.name,
         kind: probe.kind,
@@ -940,9 +941,7 @@ mod tests {
         // White to move: the constant plane carries -1 everywhere
         assert!(state[3 * plane..].iter().all(|value| *value == -1.0));
         assert!(
-            state[..3 * plane]
-                .iter()
-                .any(|value| *value != 0.0),
+            state[..3 * plane].iter().any(|value| *value != 0.0),
             "the stone planes must be populated for the flip to be measurable"
         );
 
@@ -951,7 +950,11 @@ mod tests {
             *value = -*value;
         }
         assert!(flipped[3 * plane..].iter().all(|value| *value == 1.0));
-        assert_eq!(state[..3 * plane], flipped[..3 * plane], "only ch3 may change");
+        assert_eq!(
+            state[..3 * plane],
+            flipped[..3 * plane],
+            "only ch3 may change"
+        );
         assert_ne!(state, flipped);
     }
 
@@ -995,7 +998,11 @@ mod tests {
         });
         assert!(criterion.critical);
         assert!(!criterion.passed);
-        assert!(criterion.detail.contains("collapsed"), "{}", criterion.detail);
+        assert!(
+            criterion.detail.contains("collapsed"),
+            "{}",
+            criterion.detail
+        );
     }
 
     #[test]
@@ -1012,7 +1019,11 @@ mod tests {
             max_prob_shift: 0.13,
         });
         assert!(used.passed, "a bounded colour use is not a failure");
-        assert!(used.detail.contains("used by the network"), "{}", used.detail);
+        assert!(
+            used.detail.contains("used by the network"),
+            "{}",
+            used.detail
+        );
     }
 
     #[test]
@@ -1039,7 +1050,11 @@ mod tests {
         let report = score_probes(&healthy(), Duration::ZERO);
         // every synthetic measurement uses p = 0.7
         assert!((report.sharpness - 0.7).abs() < 1e-12);
-        assert!(report.headline().contains("sharpness 0.700"), "{}", report.headline());
+        assert!(
+            report.headline().contains("sharpness 0.700"),
+            "{}",
+            report.headline()
+        );
         assert_eq!(score_probes(&[], Duration::ZERO).sharpness, 0.0);
     }
 

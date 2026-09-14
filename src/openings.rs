@@ -347,7 +347,11 @@ mod tests {
         let book = default_openings(BOARD, ROW);
         assert!(!book.is_empty(), "the built-in book must not be empty");
         for opening in &book {
-            assert_eq!(opening.plies() % 2, 0, "colour swap needs an even ply count");
+            assert_eq!(
+                opening.plies() % 2,
+                0,
+                "colour swap needs an even ply count"
+            );
             assert!(
                 is_usable(opening.stones(), BOARD, ROW),
                 "built-in openings must be legal, running positions"
@@ -385,7 +389,11 @@ mod tests {
             ],
         };
 
-        assert_eq!(opening.transformed(0, BOARD), opening, "transform 0 is the identity");
+        assert_eq!(
+            opening.transformed(0, BOARD),
+            opening,
+            "transform 0 is the identity"
+        );
 
         for transform in 0..8 {
             let moved = opening.transformed(transform, BOARD);
@@ -448,7 +456,10 @@ mod tests {
             112,98,113,114 # trailing comment\n";
         let parsed = parse_openings(text, BOARD, ROW);
         assert_eq!(parsed.len(), 2, "only the two well-formed openings survive");
-        assert_eq!(parsed[0].stones(), &[(112, Color::Black), (98, Color::White)]);
+        assert_eq!(
+            parsed[0].stones(),
+            &[(112, Color::Black), (98, Color::White)]
+        );
         assert_eq!(parsed[1].plies(), 4);
     }
 
@@ -460,8 +471,14 @@ mod tests {
         for pair in 0..3 {
             let first = &games[pair * 2];
             let second = &games[pair * 2 + 1];
-            assert!(first.a_first, "the first game of a pair gives A the Black stones");
-            assert!(!second.a_first, "the second game of a pair gives A the White stones");
+            assert!(
+                first.a_first,
+                "the first game of a pair gives A the Black stones"
+            );
+            assert!(
+                !second.a_first,
+                "the second game of a pair gives A the White stones"
+            );
             let first_opening = first.opening.as_ref().expect("book game has an opening");
             let second_opening = second.opening.as_ref().expect("book game has an opening");
             assert_eq!(
@@ -531,11 +548,7 @@ mod tests {
     #[test]
     fn odd_ply_counts_are_not_usable() {
         // Black - White - Black leaves the colour-swapped twin unreachable for Black
-        let stones = vec![
-            (112, Color::Black),
-            (111, Color::White),
-            (97, Color::Black),
-        ];
+        let stones = vec![(112, Color::Black), (111, Color::White), (97, Color::Black)];
         assert!(!is_usable(&stones, BOARD, ROW));
     }
 

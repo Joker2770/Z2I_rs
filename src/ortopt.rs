@@ -292,7 +292,10 @@ impl NeuralNetwork {
     ///
     /// Used by the weight probe to feed a deliberately perturbed state (for example with
     /// the constant colour plane flipped) and measure how much the network reacts to it.
-    pub fn commit_state(&self, state: Vec<f32>) -> Result<oneshot::Receiver<InferenceOutput>, String> {
+    pub fn commit_state(
+        &self,
+        state: Vec<f32>,
+    ) -> Result<oneshot::Receiver<InferenceOutput>, String> {
         let (response_sender, response_receiver) = oneshot::channel();
         self.request_sender
             .send(InferenceTask {
@@ -666,17 +669,16 @@ mod tests {
         assert!(!message.chars().any(char::is_control), "{message}");
         assert!(message.contains("channels") || message.contains("declares input"));
         assert_eq!(message.lines().count(), 1, "{message}");
-        assert_eq!(
-            no_tensor_input_error(Path::new("a\tb")).lines().count(),
-            1
-        );
+        assert_eq!(no_tensor_input_error(Path::new("a\tb")).lines().count(), 1);
     }
 
     #[test]
     fn single_line_only_folds_control_characters() {
         // ordinary text (including the shape brackets and colons of the real message) is kept
-        assert_eq!(single_line("input [-1, 3, 15, 15]: channels 3 vs 4"),
-                   "input [-1, 3, 15, 15]: channels 3 vs 4");
+        assert_eq!(
+            single_line("input [-1, 3, 15, 15]: channels 3 vs 4"),
+            "input [-1, 3, 15, 15]: channels 3 vs 4"
+        );
         assert_eq!(single_line("a\nb\rc\td"), "a b c d");
     }
 }

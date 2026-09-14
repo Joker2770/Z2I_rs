@@ -4,7 +4,13 @@
 use rand;
 use rand_distr::{Distribution, multi::Dirichlet};
 use sha2::{Digest, Sha256};
-use std::{cell::RefCell, env, fs, io::Write, rc::Rc, sync::atomic::AtomicUsize};
+use std::{
+    cell::RefCell,
+    env, fs,
+    io::Write,
+    rc::Rc,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 
 use crate::{
     configuration::cfg,
@@ -38,6 +44,32 @@ pub fn temp_at(step: u16) -> f64 {
 
 pub struct SelfPlay {
     neural_network: Rc<RefCell<NeuralNetwork>>,
+}
+
+/// Forbidden-move endings seen by this process since the last read.
+///
+/// Self-play is spread over threads, so the counter is process-global; `generate` reports and
+/// resets it once per round. With `Gomoku::refresh_playable_moves` in place the engine cannot
+/// play a forbidden point any more, so this should stay 0: a non-zero value means the search
+/// and the judge disagree again (or the games came from files written before the fix).
+static FORBIDDEN_MOVE_ENDINGS: AtomicUsize = AtomicUsize::new(0);
+
+/// How many games ended by the mover's own forbidden move since the last call, resetting it.
+pub fn take_forbidden_move_endings() -> usize {
+    FORBIDDEN_MOVE_ENDINGS.swap(0, Ordering::SeqCst)
+}
+
+/// Whether self-play games that end by a forbidden move are dropped instead of saved.
+///
+/// Off by default: the ending should no longer happen, and the counter above is the signal to
+/// watch. Turn it on (`SELFPLAY_DROP_FORBIDDEN=1`) if a lineage still produces them and the
+/// value targets must stay clean while the cause is being fixed -- note that a window made
+/// mostly of such games will then starve instead of training.
+fn drop_forbidden_games() -> bool {
+    matches!(
+        env::var("SELFPLAY_DROP_FORBIDDEN").as_deref(),
+        Ok("1") | Ok("true") | Ok("yes")
+    )
 }
 
 impl SelfPlay {
@@ -86,6 +118,11 @@ impl SelfPlay {
                     println!("Step: {}", step);
                     println!("temp: {}", temp);
                 }
+                // The side to move may have forbidden points (Renju Black): refresh what the
+                // search, the Dirichlet noise and the stored target are allowed to use, so none
+                // of them can disagree with the judge that ends the game. A no-op for every
+                // other rule (see `Gomoku::refresh_playable_moves`).
+                game_ref.borrow_mut().refresh_playable_moves();
                 let (raw_probs, mut action_probs) = mcts
                     .get_raw_and_tempered_probs(&game_ref.borrow(), temp)
                     .await;
@@ -173,10 +210,35 @@ impl SelfPlay {
             } else {
                 0
             };
+            // Renju's forbidden move ends the game with White winning and the mover losing on
+            // its own move. Such a game labels every Black-to-move ply as "losing", which is
+            // what collapses a value head onto the colour plane, so it is counted here -- and
+            // with SELFPLAY_DROP_FORBIDDEN=1 it is not written at all.
+            let forbidden_ending = {
+                let mut game = game_ref.borrow_mut();
+                let _ = *game.get_game_status();
+                game.ended_by_forbidden_move()
+            };
+            if forbidden_ending {
+                FORBIDDEN_MOVE_ENDINGS.fetch_add(1, Ordering::SeqCst);
+            }
             println!(
-                "Self play: total step num = {} winner = {}",
-                step, win_col_2_i
+                "Self play: total step num = {} winner = {}{}",
+                step,
+                win_col_2_i,
+                if forbidden_ending {
+                    " (forbidden-move ending)"
+                } else {
+                    ""
+                }
             );
+            if forbidden_ending && drop_forbidden_games() {
+                println!(
+                    "Self play: game dropped (SELFPLAY_DROP_FORBIDDEN=1): its labels would all be \
+                     decided by the side to move"
+                );
+                return;
+            }
             // length marker guards the degenerate zero-move case; the winner is implied by moves;
             // the rule flag is hashed too so that identical move sequences played under different
             // rules map to distinct data files
