@@ -31,6 +31,10 @@ const A3_SHAPES: &[[i32; 6]] = &[
     [0, 1, 1, 0, 1, 0],
 ];
 
+/// RIF `STRAIGHT FOUR`: an unbroken four with both ends empty, i.e. two different ways to reach
+/// five in a row. This is the shape a `THREE` has to be extendable into to count as a three.
+const A4_LIVE_SHAPE: [i32; 6] = [0, 1, 1, 1, 1, 0];
+
 #[derive(Clone, Copy)]
 pub struct RenjuJudge {
     m_renju_state: Pattern,
@@ -247,60 +251,118 @@ impl RenjuJudge {
     }
 
     fn is_double_three(&self, board: &Board, last_move: i16) -> bool {
+        self.is_double_three_at(board, last_move, 0)
+    }
+
+    /// How deep the recursion of RIF 9.3b is followed. It terminates on its own -- every level
+    /// puts one more Black stone on the board -- but the cap keeps the worst case bounded for a
+    /// decision point. Level 2 is where the measured effect stops: on random Renju games the
+    /// second condition on its own changed the verdict of about 1.5% of the double-three points,
+    /// and level 1 covered the rest. Past the cap an extension counts as allowed, which is how
+    /// the rule's own "etc." is read here.
+    const A3_EXTENSION_DEPTH: usize = 2;
+
+    /// RIF 9.2c / 9.3: is `last_move` a forbidden double-three?
+    ///
+    /// RIF's `THREE` is not a geometric shape: it is a row of three stones that can still be made
+    /// into a *straight four* (an unbroken four with both ends empty). 9.3 therefore lets a Black
+    /// double-three stand when at most one of its threes is still extendable, and it offers two
+    /// separate conditions for "extendable":
+    ///
+    /// - 9.3a: some extension point makes a straight four **without** an overline or a double-four
+    ///   at that intersection;
+    /// - 9.3b: some extension point makes a straight four **without** being a forbidden
+    ///   double-three itself -- this is the recursive half of the rule.
+    ///
+    /// The move is forbidden only when *both* counts reach two. That is why the two conditions are
+    /// counted separately instead of as one "the extension must avoid overline, double-four and
+    /// double-three" test: the combined test is not equivalent to the rule, and it errs on the
+    /// permissive side (see `double_three_forbidden_by_both_conditions`).
+    fn is_double_three_at(&self, board: &Board, last_move: i16, depth: usize) -> bool {
         let dirs = [(0, -1), (-1, 0), (-1, -1), (-1, 1)];
+        let mut n4 = [0i32; 4];
+        let mut n3 = [0i32; 4];
+        for (i, d) in dirs.iter().enumerate() {
+            n4[i] = Self::count_a4(board, last_move, *d);
+            n3[i] = Self::count_a3(board, last_move, *d);
+        }
+        let sum4: i32 = n4.iter().sum();
+        let sum3: i32 = n3.iter().sum();
+        // Two threes and no double-four are the only way this can become a double-three, and the
+        // 9.3 evaluation below is the expensive part. Gating on that keeps every ordinary point
+        // at the old price; only the handful of points that can be double-threes pay for it.
+        if sum4 >= 2 || sum3 < 2 {
+            return false;
+        }
+        // A move with one four is reported as a four-three or as a four, so the direction that
+        // holds the four contributes no three of its own (unchanged behaviour, kept so the four
+        // branches keep their meaning).
+        let four_dir = n4.iter().position(|f| *f > 0);
+        let mut scratch = board.clone();
+        let (mut count_a, mut count_b) = (0usize, 0usize);
+        for (i, d) in dirs.iter().enumerate() {
+            if n3[i] == 0 || Some(i) == four_dir {
+                continue;
+            }
+            let (a, b) = self.three_is_extendable(&mut scratch, last_move, *d, depth);
+            count_a += a as usize;
+            count_b += b as usize;
+        }
+        count_a >= 2 && count_b >= 2
+    }
 
-        let i_up_4 = Self::count_a4(board, last_move, dirs[0]);
-        let i_left_4 = Self::count_a4(board, last_move, dirs[1]);
-        let i_leftup_4 = Self::count_a4(board, last_move, dirs[2]);
-        let i_leftdown_4 = Self::count_a4(board, last_move, dirs[3]);
-        let i_up_3 = Self::count_a3(board, last_move, dirs[0]);
-        let i_left_3 = Self::count_a3(board, last_move, dirs[1]);
-        let i_leftup_3 = Self::count_a3(board, last_move, dirs[2]);
-        let i_leftdown_3 = Self::count_a3(board, last_move, dirs[3]);
-
-        let sum4 = i_up_4 + i_left_4 + i_leftup_4 + i_leftdown_4;
-        let sum3 = i_up_3 + i_left_3 + i_leftup_3 + i_leftdown_3;
-
-        if (sum4 < 2) && (sum3 >= 2) {
-            if sum4 == 0 {
-                return sum3 >= 2;
-            } else {
-                if i_up_4 == 1 {
-                    if i_left_3 + i_leftup_3 + i_leftdown_3 >= 2 {
-                        return true;
-                    } else if i_left_3 + i_leftup_3 + i_leftdown_3 == 1 {
-                        return false;
-                    } else {
-                        return false;
-                    }
-                } else if i_left_4 == 1 {
-                    if i_up_3 + i_leftup_3 + i_leftdown_3 >= 2 {
-                        return true;
-                    } else if i_up_3 + i_leftup_3 + i_leftdown_3 == 1 {
-                        return false;
-                    } else {
-                        return false;
-                    }
-                } else if i_leftup_4 == 1 {
-                    if i_up_3 + i_left_3 + i_leftdown_3 >= 2 {
-                        return true;
-                    } else if i_up_3 + i_left_3 + i_leftdown_3 == 1 {
-                        return false;
-                    } else {
-                        return false;
-                    }
-                } else if i_leftdown_4 == 1 {
-                    if i_up_3 + i_leftup_3 + i_left_3 >= 2 {
-                        return true;
-                    } else if i_up_3 + i_leftup_3 + i_left_3 == 1 {
-                        return false;
-                    } else {
-                        return false;
-                    }
-                }
+    /// RIF 9.3 for one live three through `last_move` in direction `drt`, as the pair `(a, b)`
+    /// documented on `is_double_three_at`. Both are false when the three cannot be turned into a
+    /// straight four at all: without that it is not a `THREE` in the RIF sense and never counts.
+    fn three_is_extendable(
+        &self,
+        work: &mut Board,
+        last_move: i16,
+        drt: (isize, isize),
+        depth: usize,
+    ) -> (bool, bool) {
+        let n = work.len();
+        let idx = last_move as usize;
+        let row = (idx / n) as isize;
+        let col = (idx % n) as isize;
+        let (mut a, mut b) = (false, false);
+        // A straight four that contains the three has to take its missing stone within three
+        // cells of the move along this direction; four is a cheap safety margin.
+        for off in -4isize..=4 {
+            if off == 0 {
+                continue;
+            }
+            let (rr, cc) = (row + off * drt.0, col + off * drt.1);
+            if Self::is_pos_out_of_board(n, rr, cc)
+                || work[rr as usize][cc as usize] != Color::Blank
+            {
+                continue;
+            }
+            work[rr as usize][cc as usize] = Color::Black;
+            let point = (rr * n as isize + cc) as i16;
+            // only an extension that turns this very three into a straight four counts
+            if Self::is_straight_four_through(work, point, drt) {
+                a |= !Self::is_over_line(work, point) && !self.is_double_four(work, point);
+                b |= depth >= Self::A3_EXTENSION_DEPTH
+                    || !self.is_double_three_at(work, point, depth + 1);
+            }
+            work[rr as usize][cc as usize] = Color::Blank;
+            if a && b {
+                break;
             }
         }
-        false
+        (a, b)
+    }
+
+    /// Whether the stone at `last_move` is part of an unbroken four with both ends empty.
+    ///
+    /// `collect_line_colors(.., 5)` returns at most 11 cells centred on the move, so every
+    /// 6-window it yields contains the move: a matching four always includes the point being
+    /// asked about, and a four clipped by the board edge (one end off the board) can never match,
+    /// which is exactly what a straight four requires.
+    fn is_straight_four_through(board: &Board, last_move: i16, drt: (isize, isize)) -> bool {
+        let v = Self::collect_line_colors(board, last_move, drt, 5);
+        v.len() >= 6 && v.windows(6).any(|w| w == A4_LIVE_SHAPE)
     }
 
     fn is_four_three(&self, board: &Board, last_move: i16) -> bool {
@@ -765,7 +827,10 @@ mod tests {
 
     #[test]
     fn double_three_is_forbidden() {
-        // RIF 9.2c: forming two live threes at once is forbidden
+        // RIF 9.2c: forming two live threes at once is forbidden. RIF 9.3 does not rescue this
+        // one: both threes can be extended into a straight four at a legal point (count_a = 2)
+        // and neither extension is a forbidden double-three (count_b = 2), so both conditions
+        // still see two threes.
         // horizontal _xx_x_ (7,5),(7,6),(7,8); vertical _x_xx_ (5,5),(7,5),(8,5) — the move is (7,5)
         let stones = vec![
             (idx(7, 6), Color::Black),
@@ -1011,15 +1076,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "RIF 9.3 exception not implemented: this double-three should be allowed by the rules, but the current implementation marks it forbidden (conservative false positive)"]
     fn rif_9_3_allowed_double_three() {
-        // RIF 9.3a: if only one of the two threes can be extended into a live four (extending
-        // the other would create a double-four forbidden move), the double-three is allowed.
-        // The current implementation marks it forbidden (wrong).
-        // Vertical three V: (7,5),(8,5),(10,5); its only extension point (9,5) would form
-        // a vertical live four (7,5)..(10,5) plus a horizontal four (9,3),(9,4),(9,6),(9,5) ->
-        // double-four forbidden, so V cannot be extended.
-        // Horizontal three H: (7,5),(7,6),(7,8); extension point (7,7) becomes a live four normally.
+        // RIF 9.3a: if only one of the two threes can be extended into a straight four at a point
+        // where no overline and no double-four is made, the double-three is allowed.
+        // Vertical three V: (7,5),(8,5),(10,5); its only extension point (9,5) would form a
+        // vertical live four (7,5)..(10,5) plus a horizontal four (9,3),(9,4),(9,6),(9,5) ->
+        // double-four forbidden, so V cannot be extended. count_a = 1.
+        // Horizontal three H: (7,5),(7,6),(7,8); extension point (7,7) becomes a live four there
+        // (and is no double-three either), so count_b = 2 — the move stands on condition a)
+        // alone even though condition b) still sees two threes.
         let stones = vec![
             (idx(7, 6), Color::Black),
             (idx(7, 8), Color::Black),
@@ -1032,8 +1097,83 @@ mod tests {
         let mut board = board_with(&stones);
         board[7][5] = Color::Black;
         let mut judge = RenjuJudge::new();
-        // per RIF 9.3a this move should be legal; the current implementation marks it a
-        // double-three forbidden move (false positive)
+        assert!(
+            !judge.is_double_three(&board, idx(7, 5) as i16),
+            "RIF 9.3a allows this double-three"
+        );
         assert!(judge.is_legal(&board, idx(7, 5) as i16));
+        assert_ne!(judge.get_renju_state(), Pattern::DoubleThree);
+    }
+
+    #[test]
+    fn double_three_is_allowed_by_condition_a() {
+        // RIF 9.3a decides here. Both threes can be extended without running into a forbidden
+        // double-three (count_b = 2), but for one of them every straight-four extension point
+        // also makes a double-four, so count_a = 1 and condition a) alone lets the move stand.
+        let stones = vec![
+            (idx(8, 6), Color::Black),
+            (idx(7, 7), Color::Black),
+            (idx(5, 11), Color::Black),
+            (idx(9, 11), Color::Black),
+            (idx(10, 12), Color::Black),
+            (idx(8, 10), Color::Black),
+            (idx(5, 10), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[5][9] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_three(&board, idx(5, 9) as i16));
+        assert!(judge.is_legal(&board, idx(5, 9) as i16));
+    }
+
+    #[test]
+    fn double_three_is_allowed_by_condition_b() {
+        // RIF 9.3b decides here: two threes can be extended into a straight four legally
+        // (count_a = 2, so condition a) would forbid the move), but for one of them every such
+        // extension point is itself a forbidden double-three, so count_b = 1 and condition b)
+        // lets the move stand. Without the recursive half of 9.3 this move would be rejected.
+        let stones = vec![
+            (idx(5, 4), Color::Black),
+            (idx(3, 4), Color::Black),
+            (idx(5, 6), Color::Black),
+            (idx(4, 8), Color::Black),
+            (idx(5, 10), Color::Black),
+            (idx(3, 8), Color::Black),
+            (idx(3, 6), Color::Black),
+            (idx(4, 6), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[2][7] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(!judge.is_double_three(&board, idx(2, 7) as i16));
+        assert!(judge.is_legal(&board, idx(2, 7) as i16));
+    }
+
+    #[test]
+    fn double_three_forbidden_by_both_conditions() {
+        // The two 9.3 conditions have to be counted separately, and this position is why:
+        // count_a = 2 and count_b = 2, so RIF 9.3 forbids the move -- while a combined "the
+        // extension must avoid overline, double-four *and* double-three" test (the "true three"
+        // rule several engines use) counts only one extendable three and would allow it. The two
+        // threes satisfy the two exclusion lists at *different* extension points, which is what
+        // the literal a)/b) split is about. Searched for, not hand-built: the case is rare.
+        let stones = vec![
+            (idx(3, 7), Color::Black),
+            (idx(6, 6), Color::Black),
+            (idx(4, 6), Color::Black),
+            (idx(7, 9), Color::Black),
+            (idx(8, 5), Color::Black),
+            (idx(5, 8), Color::Black),
+            (idx(6, 5), Color::Black),
+            (idx(7, 6), Color::Black),
+            (idx(4, 7), Color::Black),
+            (idx(4, 8), Color::Black),
+        ];
+        let mut board = board_with(&stones);
+        board[6][8] = Color::Black;
+        let mut judge = RenjuJudge::new();
+        assert!(judge.is_double_three(&board, idx(6, 8) as i16));
+        assert!(!judge.is_legal(&board, idx(6, 8) as i16));
+        assert_eq!(judge.get_renju_state(), Pattern::DoubleThree);
     }
 }

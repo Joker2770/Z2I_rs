@@ -550,6 +550,28 @@ the fix). Such a game is still written by default, because dropping it hides the
 `SELFPLAY_DROP_FORBIDDEN=1` drops it instead, which is only useful while a poisoned lineage is
 still being cleaned -- a window made mostly of those games would then starve rather than train.
 
+### RIF 9.3 (allowed double-threes)
+
+RIF's `THREE` is not a geometric shape: it is a row of three stones that can still be made into a
+*straight four* (an unbroken four with both ends empty). Rule 9.3 therefore allows a Black
+double-three when at most one of its threes is still extendable, and it gives two separate
+conditions for "extendable":
+
+- **9.3a** -- some extension point makes a straight four **without** an overline or a double-four
+  at that intersection;
+- **9.3b** -- some extension point makes a straight four **without** being a forbidden
+  double-three itself. This is the recursive half of the rule; `RenjuJudge::A3_EXTENSION_DEPTH`
+  caps how deep it is followed (level 2, measured as the point where the effect stops).
+
+The move is forbidden only when **both** counts reach two. Counting the two conditions separately
+matters: a single "the extension must avoid overline, double-four *and* double-three" test -- the
+"true three" rule several engines use -- is not the same rule and errs on the permissive side, so
+the judge does not use it (`double_three_forbidden_by_both_conditions` pins such a position). On
+random Renju games the exception lifts roughly a fifth of the double-three rejections in dense
+positions and about a twentieth in the first 40 plies; the evaluation costs nothing measurable,
+because the 9.3 work sits behind the `sum4 < 2 && sum3 >= 2` gate and only the points that can
+actually become double-threes pay for it.
+
 ### ORT Training
 
 The Rust training entry needs ONNX Runtime Training artifacts, not ordinary inference models. The artifact directory must contain:
