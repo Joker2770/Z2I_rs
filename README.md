@@ -492,16 +492,27 @@ cd train && python3 audit_labels.py --dir ../build --expect-rule 1
 It also verifies each game's **ending** against the position it was decided from. `play.rs`
 stores the position *before* the move about to be played at every ply, so the deciding move is
 not in the file -- but the ending is still pinned down: a positive label at the last stored ply
-must be an ordinary five (the position before it has to hold the four that completes it), a
-negative one means the mover lost on **their own** move, which only Renju allows (Black's
-forbidden move ends the game with White winning), and neither side may already hold a deciding
-line before that move. The aggregate label statistics cannot catch this class of error, because
-they are self-consistent by construction:
+must be a win from that position (some gap-fill completes a line the rule accepts), a negative
+one means the mover lost on **their own** move, which only Renju allows (Black's forbidden move
+ends the game with White winning), and neither side may already hold a deciding line before that
+move. Caro is the one rule where a five can sit on the board without having ended the game:
+`oxxxxxo`, blocked by an opponent stone at both ends, is not a win (`caro.rs` omits it from
+`WIN_SHAPES`), so those games are reported as a note rather than as having run past their end.
+The aggregate label statistics cannot catch this class of error, because they are
+self-consistent by construction:
 
 ```
 termination check: 38/40 game(s) end the way their labels say (...)
   note: 2 game(s) ended with the mover losing on their own move -- Renju's forbidden-move loss
-  data_16_bbbbbbbb: labelled Black win on the last move, but the position before it holds no four for Black
+  data_16_bbbbbbbb: labelled Black win on the last move, but the position before it lets Black complete no winning line
+```
+
+... and on a Caro build, the five that did not end anything is named, line by line:
+
+```
+  note: 3 game(s) hold a five Caro does not count (the run is blocked by an opponent stone at
+        both ends, `oxxxxxo`), which is why those games played on instead of ending:
+    data_259_25bf9ae7(...): row 1 col 1 (horizontal, 5 in a row)
 ```
 
 That note is worth reading on a Renju build: a game that ends by Black's forbidden move labels

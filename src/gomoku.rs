@@ -856,6 +856,50 @@ mod tests {
         );
     }
 
+    // --- INFO rule 8: caro (0b1000), the flag the Caro training windows are generated with ---
+
+    /// Build a 15x15 game, apply rule 8 and load the position (`rule9_game` without Standard).
+    /// The last stone is the move being judged; nine stones so the rule check triggers.
+    fn rule8_game(stones: &[(u16, Color)]) -> Gomoku {
+        let mut gomoku = Gomoku::new(15, 5).unwrap();
+        assert!(gomoku.set_rule(RuleFlag::Caro));
+        assert!(gomoku.load_position(stones, Color::White));
+        gomoku
+    }
+
+    #[test]
+    fn caro_five_blocked_at_both_ends_is_not_win() {
+        // o xxxxx o does not win, so the game plays on -- which is why a Caro window may hold
+        // this shape at the end of every ply after it appeared; `train/audit_labels.py` reads it
+        // the same way instead of calling the whole window degenerate
+        let mut stones = vec![
+            ((7 * 15 + 3) as u16, Color::White),
+            ((7 * 15 + 9) as u16, Color::White),
+            (0u16, Color::White),
+            (1u16, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule8_game(&stones);
+        assert_eq!(
+            gomoku.get_game_status(),
+            &(GameStage::Running, Color::Blank)
+        );
+    }
+
+    #[test]
+    fn caro_five_blocked_at_one_end_wins() {
+        // o xxxxx _: only one end is blocked, so the five ends the game
+        let mut stones = vec![
+            ((7 * 15 + 3) as u16, Color::White),
+            (0u16, Color::White),
+            (1u16, Color::White),
+            (2u16, Color::White),
+        ];
+        stones.extend((4..=8).map(|c| ((7 * 15 + c) as u16, Color::Black)));
+        let mut gomoku = rule8_game(&stones);
+        assert_eq!(gomoku.get_game_status(), &(GameStage::End, Color::Black));
+    }
+
     // --- INFO rule 0: free-style (five or more in a row wins) ---
 
     fn rule0_game(stones: &[(u16, Color)]) -> Gomoku {

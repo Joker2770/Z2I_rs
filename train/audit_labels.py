@@ -55,10 +55,14 @@ MIN_GAMES_FOR_VERDICT = 5
 # 8 = Caro; a combination requires every sub-rule to agree (src/gomoku.rs)
 RULE_STANDARD = 0b0001
 RULE_RENJU = 0b0100
+RULE_CARO = 0b1000
 BLACK, WHITE = 1, -1
-# board size of the synthetic fixtures: wide enough to hold the six-runs the rule-semantics
-# tests need, shared by write_game and self_test so the two cannot drift apart
-SELFTEST_BOARD = 6
+# the four line directions every judge in src/ scans: horizontal, vertical, both diagonals
+DIRECTIONS = ((0, 1), (1, 0), (1, 1), (1, -1))
+# board size of the synthetic fixtures: wide enough to fit a five plus a blocker at each end,
+# which the Caro rule-semantics tests below need; shared by write_game and self_test so the two
+# cannot drift apart
+SELFTEST_BOARD = 8
 
 
 def parse_batch_id(file_name):
@@ -147,6 +151,10 @@ def read_game(path, board, verify_termination=True):
         "last_moves": last_moves,
         "termination_check": termination_check(last_position, v, color, board, rule, step)
         if verify_termination else (None, "unchecked", "not checked"),
+        # only Caro can legitimately play past a five, so only Caro files are asked about it
+        "caro_blocked_fives": caro_blocked_fives(last_position, board)
+        if verify_termination and rule & RULE_CARO and last_position is not None
+        else [],
         "pi_entropy": [],
         "pi_top1": [],
         "pi_support": [],
@@ -187,47 +195,103 @@ def colour_name(colour):
     return "empty"
 
 
-def final_run_length(final_board, index, board_size):
-    """Length of the same-colour run through `index`, in its longest direction (0 if empty)."""
-    stone = final_board[index]
+def run_bounds(board, board_size, index, direction):
+    """Describe the same-colour run through `index` along `direction`.
+
+    Returns `(length, before, after)`, where `before`/`after` are the board values just outside
+    the run -- `None` where the board edge stops it, because `caro.rs` treats the edge as a wall
+    rather than as a block (its `WIN_SHAPES` holds `{3,1,1,1,1,1,2}`, a five the edge abuts).
+    A stone with no neighbour of its own colour in this direction yields a length of 1.
+    """
+    stone = board[index]
     if stone == 0:
-        return 0
-    best = 0
-    for d_row, d_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
-        length = 1
-        for sign in (1, -1):
-            row = index // board_size + sign * d_row
-            col = index % board_size + sign * d_col
-            while (
-                0 <= row < board_size
-                and 0 <= col < board_size
-                and final_board[row * board_size + col] == stone
-            ):
-                length += 1
-                row += sign * d_row
-                col += sign * d_col
-        best = max(best, length)
-    return best
+        return 0, None, None
+    d_row, d_col = direction
+    row, col = divmod(index, board_size)
+    length = 1
+    bounds = {}
+    for sign in (-1, 1):
+        r = row + sign * d_row
+        c = col + sign * d_col
+        while 0 <= r < board_size and 0 <= c < board_size and board[r * board_size + c] == stone:
+            length += 1
+            r += sign * d_row
+            c += sign * d_col
+        bounds[sign] = (
+            board[r * board_size + c] if 0 <= r < board_size and 0 <= c < board_size else None
+        )
+    return length, bounds[-1], bounds[1]
 
 
-def is_deciding_run(length, colour, rule):
-    """Whether a run of `length` ends the game for `colour` under `rule`.
+def describe_run(board, board_size, index, direction, length):
+    """Readable location of a run, e.g. `row 3 col 4 (horizontal, 5 in a row)` (0-based)."""
+    d_row, d_col = direction
+    name = {
+        (0, 1): "horizontal",
+        (1, 0): "vertical",
+        (1, 1): "diagonal",
+        (1, -1): "antidiagonal",
+    }[direction]
+    row, col = divmod(index, board_size)
+    stone = board[index]
+    # walk back to the run's first stone so the printed cell is where the line starts
+    while (
+        0 <= row - d_row < board_size
+        and 0 <= col - d_col < board_size
+        and board[(row - d_row) * board_size + col - d_col] == stone
+    ):
+        row -= d_row
+        col -= d_col
+    return f"row {row} col {col} ({name}, {length} in a row)"
+
+
+def caro_accepts_run(length, colour, before, after):
+    """Whether `caro.rs` counts a run of `length` as a win for `colour`.
+
+    Caro is five-or-more like FreeStyle with one extra refusal: a five blocked by an opponent
+    stone at *both* ends is not a win, which is why `WIN_SHAPES` deliberately omits
+    `{2,1,1,1,1,1,2}` (`oxxxxxo`). The board edge is a wall, not a block -- `{3,1,1,1,1,1,2}`,
+    a five with the edge on one side, is in the table.
+    """
+    if length < 5:
+        return False
+    return not (length == 5 and before == -colour and after == -colour)
+
+
+def is_winning_run(length, colour, rule, before, after):
+    """Whether a run of `length` bounded by `before`/`after` is a win for `colour`.
 
     Mirrors the judges in src/: five or more wins in FreeStyle (`free_style.rs` counts `>= 4`
-    neighbours) and in Caro; Standard counts exactly five (`standard.rs` uses `== 4`, so an
-    overline is not a win); Renju adds Black's illegal overline, which is why Black needs
-    exactly five there while White's overline still wins (`renju.rs`).
+    neighbours) and in Caro, minus the doubly blocked five (`caro_accepts_run`); Standard counts
+    exactly five (`standard.rs` uses `== 4`, so an overline is not a win); Renju counts exactly
+    five for Black, whose overline is a forbidden shape instead, while White's overline still
+    wins (`renju.rs`). A combination (e.g. Standard|Caro = 9) needs every bit to accept, so both
+    the exact-five test and the Caro test are applied.
     """
-    if rule & RULE_RENJU and colour == BLACK:
-        return length == 5
-    if rule & RULE_STANDARD:
-        return length == 5
-    return length >= 5
+    if (rule & RULE_STANDARD) or (rule & RULE_RENJU and colour == BLACK):
+        if length != 5:
+            return False
+    elif length < 5:
+        return False
+    if rule & RULE_CARO and not caro_accepts_run(length, colour, before, after):
+        return False
+    return True
+
+
+def ends_game(length, colour, rule, before, after):
+    """Whether a run means the game was already over: a win, or a loss on `colour`'s own move.
+
+    Renju is the only rule that ends a game on a shape that is not a win for the mover: Black's
+    overline (six or more) is a forbidden move, so it loses the game for Black (`renju.rs`).
+    """
+    if is_winning_run(length, colour, rule, before, after):
+        return True
+    return bool(rule & RULE_RENJU) and colour == BLACK and length >= 6
 
 
 def line_windows(board_size, length=5):
     """Every contiguous `length`-cell line on the board, as index tuples (4 directions)."""
-    for d_row, d_col in ((0, 1), (1, 0), (1, 1), (1, -1)):
+    for d_row, d_col in DIRECTIONS:
         for row in range(board_size):
             for col in range(board_size):
                 end_row = row + (length - 1) * d_row
@@ -240,22 +304,68 @@ def line_windows(board_size, length=5):
                 )
 
 
-def has_deciding_run(board, board_size, colour, rule):
-    """Whether `colour` already holds a line that would have ended the game."""
-    return any(
-        stone == colour
-        and is_deciding_run(final_run_length(board, index, board_size), colour, rule)
-        for index, stone in enumerate(board)
-    )
+def deciding_run(board, board_size, colour, rule):
+    """A run of `colour` that already ended the game (readable label), else None.
+
+    Per direction rather than per longest direction: a five that Caro refuses may still be a
+    stone of another, winning line, and the two need not lie in the same direction.
+    """
+    for index, stone in enumerate(board):
+        if stone != colour:
+            continue
+        for direction in DIRECTIONS:
+            length, before, after = run_bounds(board, board_size, index, direction)
+            if ends_game(length, colour, rule, before, after):
+                return describe_run(board, board_size, index, direction, length)
+    return None
 
 
-def has_four(board, board_size, colour):
-    """Whether `colour` can complete five with one move: a 5-window with one empty cell."""
-    for window in line_windows(board_size):
-        stones = [board[index] for index in window]
-        if stones.count(colour) == 4 and stones.count(0) == 1:
+def wins_at(board, board_size, index, colour, rule):
+    """Whether the stone `colour` has just placed at `index` completes a winning line."""
+    for direction in DIRECTIONS:
+        length, before, after = run_bounds(board, board_size, index, direction)
+        if is_winning_run(length, colour, rule, before, after):
             return True
     return False
+
+
+def has_winning_reply(board, board_size, colour, rule):
+    """Whether `colour` to move wins by filling a gap: a 5-window holding four of its stones
+    and one empty cell, where landing the stone really does win under `rule`.
+
+    Counting the four is not enough under Caro: `oxxxx_o` holds a four, but its only completion
+    is `oxxxxxo`, a five the rule refuses, so it is no threat -- and a file that labels a win
+    from such a position is exactly the poison this command hunts.
+    """
+    board = list(board)
+    for window in line_windows(board_size):
+        stones = [board[index] for index in window]
+        if stones.count(colour) != 4 or stones.count(0) != 1:
+            continue
+        gap = window[stones.index(0)]
+        board[gap] = colour
+        won = wins_at(board, board_size, gap, colour, rule)
+        board[gap] = 0
+        if won:
+            return True
+    return False
+
+
+def caro_blocked_fives(board, board_size):
+    """Every five on the board that Caro refuses because the opponent blocks both ends.
+
+    These explain a Caro game that played past a five without anyone having misplayed, so the
+    report lists them instead of leaving the reader to guess why the game did not end.
+    """
+    blocked = set()
+    for index, stone in enumerate(board):
+        if stone == 0:
+            continue
+        for direction in DIRECTIONS:
+            length, before, after = run_bounds(board, board_size, index, direction)
+            if length == 5 and before == -stone and after == -stone:
+                blocked.add(describe_run(board, board_size, index, direction, length))
+    return sorted(blocked)
 
 
 def termination_check(board, v, color, board_size, rule, step):
@@ -265,14 +375,16 @@ def termination_check(board, v, color, board_size, rule, step):
     move that decided a game is not in the file -- but the ending is still pinned down:
 
     * the side to move at the last stored ply plays the deciding move, so a positive label
-      there has to be an ordinary five: the position before it must hold a four to complete.
-      Anything else means the labels and the positions disagree, which poisons every target in
-      the file while leaving the aggregate statistics perfectly self-consistent;
+      there has to be a win from that position: some gap-fill has to complete a line the rule
+      accepts. Anything else means the labels and the positions disagree, which poisons every
+      target in the file while leaving the aggregate statistics perfectly self-consistent;
     * a negative label there means the mover lost **on their own move**, which only Renju
       allows (Black's forbidden move ends the game with White winning). Under any other rule
       that cannot happen, so it is reported;
     * and neither side may already hold a deciding line before that move, which would mean the
-      game ran past its end.
+      game ran past its end; a Caro five blocked by an opponent stone at both ends is
+      deliberately not such a line, so it is listed as `caro_blocked_fives` instead of being
+      reported as a failure (see `caro_accepts_run`).
 
     Returns (True/False/None, kind, detail). `kind` is "five", "forbidden" (Renju only) or
     "unchecked"; None means there was nothing to check.
@@ -284,15 +396,16 @@ def termination_check(board, v, color, board_size, rule, step):
         return None, "unchecked", "the last ply carries no label"
     mover = color[-1]
     for colour in (BLACK, WHITE):
-        if has_deciding_run(board, board_size, colour, rule):
+        found = deciding_run(board, board_size, colour, rule)
+        if found:
             return (False, "unchecked",
                     f"{colour_name(colour)} already holds a deciding line before the last "
-                    f"move, so the game should have ended earlier")
+                    f"move ({found}), so the game should have ended earlier")
     if label > 0:
-        if not has_four(board, board_size, mover):
+        if not has_winning_reply(board, board_size, mover, rule):
             return (False, "unchecked",
                     f"labelled {colour_name(mover)} win on the last move, but the position "
-                    f"before it holds no four for {colour_name(mover)}")
+                    f"before it lets {colour_name(mover)} complete no winning line")
         return True, "five", f"{colour_name(mover)} completes a five"
     if rule & RULE_RENJU and mover == BLACK:
         return (True, "forbidden",
@@ -316,6 +429,7 @@ def audit(games):
         "termination_games": 0,
         "termination_failures": [],
         "forbidden_endings": 0,
+        "caro_blocked": [],
         "pi_entropy": [],
         "pi_top1": [],
         "pi_support": [],
@@ -335,6 +449,8 @@ def audit(games):
                     report["forbidden_endings"] += 1
             else:
                 report["termination_failures"].append((game["path"], detail))
+        if game["caro_blocked_fives"]:
+            report["caro_blocked"].append((game["path"], game["caro_blocked_fives"][0]))
         for ply in range(game["step"]):
             report["plies"] += 1
             value = game["v"][ply]
@@ -426,6 +542,14 @@ def print_report(report, skipped, candidates, expect_rule, board):
             )
         for file_path, detail in report["termination_failures"][:5]:
             print(f"  {os.path.basename(file_path)}: {detail}")
+        if report["caro_blocked"]:
+            print(
+                f"  note: {len(report['caro_blocked'])} game(s) hold a five Caro does not count "
+                f"(the run is blocked by an opponent stone at both ends, `oxxxxxo`), which is "
+                f"why those games played on instead of ending:"
+            )
+            for file_path, detail in report["caro_blocked"][:5]:
+                print(f"    {os.path.basename(file_path)}: {detail}")
 
     degenerate = False
     if report["termination_failures"]:
@@ -655,6 +779,64 @@ def self_test():
         assert ok_report["termination_failures"] == [], ok_report["termination_failures"]
         assert ok_report["forbidden_endings"] == 1, ok_report["forbidden_endings"]
         assert print_report(ok_report, ok_skipped, 2, None, board) is False
+
+        # the rule model the checks rest on, pinned directly: every five wins except the doubly
+        # blocked one, and an overline always does (the enumeration the Rust test
+        # `five_in_a_row_wins_unless_both_ends_are_blocked` runs against the real judge)
+        for colour in (BLACK, WHITE):
+            for before in (0, colour, -colour, None):
+                for after in (0, colour, -colour, None):
+                    assert is_winning_run(5, colour, RULE_CARO, before, after) == (
+                        not (before == -colour and after == -colour)
+                    ), (colour, before, after)
+                    assert is_winning_run(6, colour, RULE_CARO, before, after), (colour, before)
+
+        # Caro: `oxxxxxo` -- a five blocked by an opponent stone at both ends -- is deliberately
+        # not a win, so a Caro game may legitimately play past one. Reading it as a deciding line
+        # is what turns a healthy Caro window into a false DEGENERATE verdict.
+        caro_blocked = [0] * plane
+        for col, value in enumerate([BLACK, WHITE, WHITE, WHITE, WHITE, WHITE, BLACK, 0]):
+            caro_blocked[1 * board + col] = value
+        # the mover's own four (row 3, cols 0-3), the position it is labelled to win from
+        for col in range(4):
+            caro_blocked[3 * board + col] = BLACK
+        # the same four, but its only completion is a five Caro refuses (`oxxxx_o`)
+        caro_dead_four = list(caro_blocked)
+        for col, value in enumerate([BLACK, WHITE, WHITE, WHITE, WHITE, 0, BLACK, 0]):
+            caro_dead_four[1 * board + col] = value
+
+        caro_dir = os.path.join(temp, "caro_legal")
+        os.makedirs(caro_dir)
+        write_game(os.path.join(caro_dir, "data_0_car0car0"), 8, black_win, board=caro_blocked)
+        # the same four under FreeStyle is a real threat (a five need not be unblocked there),
+        # so this file's labels hold up too
+        write_game(os.path.join(caro_dir, "data_16_0dd0dd0d"), 0, white_win, board=caro_dead_four)
+        caro_games, caro_skipped = read_window(select_files(caro_dir, ("",), None), board)
+        caro_report = audit(caro_games)
+        assert caro_report["termination_failures"] == [], caro_report["termination_failures"]
+        # the ignored five is listed once, with the line's location, not once per stone in it
+        assert len(caro_report["caro_blocked"]) == 1, caro_report["caro_blocked"]
+        assert caro_report["caro_blocked"][0][1].startswith("row 1 col 1"), caro_report["caro_blocked"]
+        assert print_report(caro_report, caro_skipped, 2, None, board) is False
+
+        # ... but the exemption is exactly one shape, so everything else is still caught
+        caught_dir = os.path.join(temp, "caro_still_caught")
+        os.makedirs(caught_dir)
+        # an unblocked Caro five ends the game, so this one ran past its end
+        caro_open = list(caro_blocked)
+        caro_open[1 * board + 0] = 0
+        write_game(os.path.join(caught_dir, "data_0_0badc0de"), 8, black_win, board=caro_open)
+        # FreeStyle counts the blocked five, so the same board is a failure under that rule
+        write_game(os.path.join(caught_dir, "data_16_cafebabe"), 0, black_win, board=caro_blocked)
+        # under Caro a dead four completes no winning five, so "White wins on the last move"
+        # disagrees with the position it was decided from
+        write_game(os.path.join(caught_dir, "data_32_deadf00d"), 8, white_win,
+                   board=caro_dead_four)
+        caught_games, caught_skipped = read_window(select_files(caught_dir, ("",), None), board)
+        caught_report = audit(caught_games)
+        assert len(caught_report["termination_failures"]) == 3, caught_report["termination_failures"]
+        assert caught_report["caro_blocked"] == [], caught_report["caro_blocked"]
+        assert print_report(caught_report, caught_skipped, 3, None, board) is True
 
         # a window too small to judge must say so instead of crying degeneracy
         one_dir = os.path.join(temp, "one_game")

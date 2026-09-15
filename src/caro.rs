@@ -341,4 +341,50 @@ mod tests {
         let mut judge = CaroJudge::new();
         assert!(RuleOpt::check_win(&mut judge, &board, idx(row, 7) as i16));
     }
+
+    /// What a five's two ends hold decides it: Caro accepts every combination (empty cell, own
+    /// stone, board edge) except an opponent stone on *both* sides -- the `oxxxxxo` shape
+    /// `WIN_SHAPES` deliberately omits. `train/audit_labels.py` models the rule the same way
+    /// (see `caro_accepts_run`), so this test is what keeps the audit from calling a legal Caro
+    /// game "ran past its end" just because it played on after a blocked five.
+    #[test]
+    fn five_in_a_row_wins_unless_both_ends_are_blocked() {
+        let judge = CaroJudge::new();
+        let row = 7;
+        for &stone in &[Color::Black, Color::White] {
+            let opponent = if stone == Color::Black {
+                Color::White
+            } else {
+                Color::Black
+            };
+            // five in the middle of the row, so both ends hold a real cell
+            for &left in &[Color::Blank, stone, opponent] {
+                for &right in &[Color::Blank, stone, opponent] {
+                    let mut board = vec![vec![Color::Blank; N]; N];
+                    for col in 5..=9 {
+                        board[row][col] = stone;
+                    }
+                    board[row][4] = left;
+                    board[row][10] = right;
+                    assert_eq!(
+                        judge.check_win(&board, idx(row, 7) as i16),
+                        !(left == opponent && right == opponent),
+                        "{stone:?} five with {left:?} / {right:?} on its ends"
+                    );
+                }
+            }
+            // the same five flush against the left edge: the border is a wall, not a block
+            for &right in &[Color::Blank, stone, opponent] {
+                let mut board = vec![vec![Color::Blank; N]; N];
+                for col in 0..=4 {
+                    board[row][col] = stone;
+                }
+                board[row][5] = right;
+                assert!(
+                    judge.check_win(&board, idx(row, 2) as i16),
+                    "{stone:?} edge five with {right:?} on the far end"
+                );
+            }
+        }
+    }
 }
