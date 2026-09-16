@@ -37,7 +37,11 @@ struct InferenceTask {
 }
 
 pub struct NeuralNetwork {
-    request_sender: tokio_mpsc::UnboundedSender<InferenceTask>,
+    /// The queue the workers feed; `Drop` closes it to stop the inference loop, and closing
+    /// it is what releases the ONNX Runtime `Session`.
+    request_sender: Option<tokio_mpsc::UnboundedSender<InferenceTask>>,
+    /// The thread that owns the `Session`; joined in `Drop` (see the `Drop` impl below).
+    worker: Option<thread::JoinHandle<()>>,
 }
 
 /// The input layout this build feeds the model: `[batch, channels, rows, cols]`, with a
@@ -186,7 +190,7 @@ impl NeuralNetwork {
             .enable_all()
             .build()
             .map_err(|error| error.to_string())?;
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("onnx-inference".to_string())
             .spawn(move || {
                 if cfg::INFER_ASYNC {
@@ -208,7 +212,10 @@ impl NeuralNetwork {
                 }
             })?;
 
-        let nn = NeuralNetwork { request_sender };
+        let nn = NeuralNetwork {
+            request_sender: Some(request_sender),
+            worker: Some(worker),
+        };
 
         Ok(nn)
     }
@@ -297,13 +304,46 @@ impl NeuralNetwork {
         state: Vec<f32>,
     ) -> Result<oneshot::Receiver<InferenceOutput>, String> {
         let (response_sender, response_receiver) = oneshot::channel();
-        self.request_sender
+        let sender = self
+            .request_sender
+            .as_ref()
+            .ok_or_else(|| "inference worker has already shut down".to_string())?;
+        sender
             .send(InferenceTask {
                 state,
                 response: response_sender,
             })
             .map_err(|error| error.to_string())?;
         Ok(response_receiver)
+    }
+}
+
+/// Shut the inference thread down and **wait for it**, so the `Session` is gone before the
+/// caller returns.
+///
+/// ONNX Runtime must have every `Session` released while its own process-global state is
+/// still intact, which is why `ort` releases the environment from a `.fini_array` hook (see
+/// the comment in its `environment.rs`: "ONNX Runtime is *very* particular about `ReleaseEnv`
+/// being called before any C++ destructors are called"). That hook can only drop the
+/// environment once no `Session` holds it any more -- each one keeps an `Arc<Environment>` --
+/// so a `Session` still alive at the end of `main` makes the teardown run against a live
+/// environment and runtime. In practice that kills the process inside glibc's allocator with
+/// `corrupted double-linked list`, *after* the last line of the command has been printed: the
+/// self-play round looks like it finished, and only the exit crashes.
+///
+/// Leaving the worker detached is exactly how a `Session` survives that long: the function
+/// returns and the process exits while the thread is still parked in `recv()`. Closing the
+/// channel and joining here means the worker drops the `Session` in the thread that owns it,
+/// and does so before the caller (and eventually `main`) moves on.
+impl Drop for NeuralNetwork {
+    fn drop(&mut self) {
+        // dropping the sender is what ends the loop in `inference_loop_*`
+        drop(self.request_sender.take());
+        if let Some(worker) = self.worker.take() {
+            // the worker is parked in `recv()` (it returns as soon as the channel closes) or
+            // finishing one last batch, so this join is bounded by a single `run` call
+            let _ = worker.join();
+        }
     }
 }
 

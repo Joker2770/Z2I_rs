@@ -615,6 +615,29 @@ Each MCTS simulation sends its inference request to the background ONNX worker. 
 
 Therefore, a larger batch size may improve GPU throughput, but increases the per-request latency and memory usage. The MCTS simulation count is controlled by `num_mct_sims`.
 
+### Session lifetime (`NeuralNetwork` shutdown)
+
+Every `NeuralNetwork` owns one ONNX Runtime `Session` on its own `onnx-inference` thread, and it releases that session deterministically when it is dropped: the request channel is closed and the thread is joined, so the worker destroys the `Session` in the thread that created it instead of leaving it to the process to exit around.
+
+This is not cosmetic. Each `Session` holds an `Arc<Environment>`, and ONNX Runtime requires every session to be released while its own globals are still intact — that is why `ort` releases the process-wide environment from a `.fini_array` hook, with the comment that "ONNX Runtime is *very* particular about `ReleaseEnv` being called before any C++ destructors are called". A `Session` still alive when `main` returns makes that teardown run against a live environment and a live provider (a detached worker thread parked in `recv()` leaves exactly that behind). The symptom is an abort *after* the last line of the command:
+
+```
+Self play: no forbidden-move endings
+corrupted double-linked list
+Aborted (core dumped)
+```
+
+Read that message for what it is: `corrupted double-linked list` is printed by glibc's allocator, not by Rust. A Rust bug would have said `thread '...' panicked at ...` first (the release profile sets `panic = "abort"`, which still prints the panic before aborting), and this crate contains no `unsafe` at all — so the heap was damaged by native code, and the only native code in the process is ONNX Runtime (plus the CUDA provider on GPU builds). Joining the worker keeps every session's release inside ORT's supported order and removes the race between one session being torn down and another one starting up or the process exiting.
+
+If it still happens, capture the abort's stack from the core dump, since that names the native frame that corrupted the heap:
+
+```bash
+ulimit -c unlimited
+gdb -batch -ex bt ./train_and_eval core      # or: gdb -batch -ex run -ex bt --args ./train_and_eval generate 247
+```
+
+Frames under `libonnxruntime.so` (or `libcuda`/`libcudnn`) confirm the native side; the fix for that is a matching CUDA-enabled `libonnxruntime.so` for this `ort` build (`--features cuda` needs `ORT_LIB_LOCATION` pointing at it), not a source change here.
+
 ## Snap
 
 A snap named `z2i-rs` is published on snapcraft.io; the packaging lives in `snap/snapcraft.yaml`. It ships the engine binary only and builds from the GitHub main branch. No weights are bundled — after installing, copy `snap/config.toml` to `~/snap/z2i-rs/current/.config/Z2I_rs/config.toml` and point the model paths at your own ONNX weight.

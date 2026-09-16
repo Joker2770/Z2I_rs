@@ -30,6 +30,13 @@
 #                self-play"), so the "no forbidden-move endings" line after each generate
 #                round is the signal to read; set this only while cleaning a poisoned lineage,
 #                since a window made of those games would starve instead of training.
+#   TOLERATE_TEARDOWN_ABORT=1  keep looping when a generate round exits non-zero *after* it
+#                finished. ONNX Runtime's own teardown at exit can abort inside glibc
+#                ("corrupted double-linked list", see README "Session lifetime"), which is a
+#                round whose data is already on disk and renamed; the round-complete line plus
+#                the absence of a half-written data file identify exactly that case. Every
+#                other failure still stops the loop, and the abort is still reported loudly,
+#                because a heap that broke mid-round is not something to keep training on.
 #   STEP         batch id step per round, default 16 (= NUM_2_SELF_PLAY in src/configuration.rs)
 set -euo pipefail
 
@@ -64,6 +71,10 @@ export REPLAY_INCLUDE_ARCHIVE
 # keep the batch id step in sync with it
 STEP="${STEP:-16}"
 
+# see the header comment: off by default, so an unexpected abort still stops the run unless it
+# is explicitly recognised as "the round finished, only the exit crashed"
+TOLERATE_TEARDOWN_ABORT="${TOLERATE_TEARDOWN_ABORT:-0}"
+
 cd "$WORK_DIR"
 
 # absolute training work dir used by learner.py (current dir if unset), aligned with WORK_DIR
@@ -72,7 +83,33 @@ export BUILD_DIR
 
 for ((iter=1; iter<=MAX_ITERS; iter++)); do
     echo "===== iter $iter: generate batch $BATCH_ID ====="
-    "$BIN" generate "$BATCH_ID"
+    if [ "$TOLERATE_TEARDOWN_ABORT" = "1" ]; then
+        # Keep the round's output so a non-zero exit can be classified, and count half-written
+        # data files before and after: a new .part means a game died mid-write, which is the one
+        # case this must NOT tolerate, because the round's window would be incomplete.
+        generate_log="$(mktemp)"
+        parts_before="$(find data -name '*.part' 2>/dev/null | wc -l || true)"
+        generate_status=0
+        "$BIN" generate "$BATCH_ID" 2>&1 | tee "$generate_log" || generate_status=$?
+        parts_after="$(find data -name '*.part' 2>/dev/null | wc -l || true)"
+        if (( generate_status != 0 )); then
+            if grep -q 'Self play: no forbidden-move endings' "$generate_log" \
+                && (( parts_after <= parts_before )); then
+                echo "WARNING: generate exited with status $generate_status after the round had" >&2
+                echo "         completed: every game is on disk, so the round is usable and the" >&2
+                echo "         loop continues (see README \"Session lifetime\"). Set" >&2
+                echo "         TOLERATE_TEARDOWN_ABORT=0 to stop on this instead." >&2
+            else
+                rm -f "$generate_log"
+                echo "generate failed with status $generate_status before the round completed;" >&2
+                echo "stopping (a half-written or missing data file is not trained on)" >&2
+                exit "$generate_status"
+            fi
+        fi
+        rm -f "$generate_log"
+    else
+        "$BIN" generate "$BATCH_ID"
+    fi
     BATCH_ID=$((BATCH_ID + STEP))
 
     echo "===== iter $iter: train ====="
