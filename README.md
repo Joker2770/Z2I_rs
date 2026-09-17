@@ -237,13 +237,14 @@ second in total, no search):
 
 ```
 $ train_and_eval verify_weight 1205
-weight probe: PASS (3.0s, policy sharpness 0.772)
+weight probe: PASS (3.1s, policy sharpness 0.772)
   outputs            ok    6 position(s), |v| max 1.000
   win in one         ok    3/3 solved: horizontal gap p=1.000, vertical gap p=0.998, diagonal gap p=0.999
+  value (win in one) ok    v=+1.000, +1.000, +1.000
   block the four     ok    top1 156 p=0.833 (advisory)
   value (winning)    ok    v=+1.000
   value (losing)     ok    v=-1.000
-  colour plane       ok    flipping ch3 shifts value by 0.000 and policy top-1 by 0.000 -- ignored, so the plane is redundant here
+  colour plane       ok    flipping ch3 shifts value by 0.000 and policy top-1 by 0.000 -- unused (advisory)
   per-position answer:
     win in one (horizontal gap)        top1 111  p=1.000 v=+1.000
     win in one (vertical gap)          top1 97   p=0.998 v=+1.000
@@ -255,24 +256,45 @@ weight probe: PASS (3.0s, policy sharpness 0.772)
 
 - **win in one** (3 shapes): the side to move has exactly one immediate five; the raw
   policy top-1 must be it. A uniform policy answers index 0 everywhere and solves none.
+  Tactics are judged in bulk -- one miss out of three is tolerated, because the raw policy
+  sees the shape with no search to help it.
+- **value (win in one)**: the *value* of those same shapes is judged on every one of them,
+  and unlike the policy it has no tolerance: each probe is a decided position (the mover
+  has an immediate five), so a value that comes back negative there is a sign error the
+  search cannot repair. This is the on-distribution check for a value head that reads the
+  side to move off the redundant colour plane: measured on a FreeStyle candidate
+  (2026-09-17) the policy still solved 2/3 shapes and both value probes kept their signs,
+  while the diagonal win in one evaluated -0.802 -- a collapsed head still reported that
+  candidate as `bounded use` (see below), this line is what rejects it.
 - **block the four**: the opponent threatens five and the block is the only move that does
   not lose at once. Advisory only -- a policy preferring a counter-threat is weak, not
   broken, so this never rejects a candidate on its own.
 - **value signs**: a won position must evaluate positive and a lost one negative, and
   decisively so (|v| >= 0.5), which catches a flat or inverted value head.
-- **colour plane** (gate): every probe is also run with channel 3 negated. That channel
+- **colour plane** (advisory): every probe is also run with channel 3 negated. That channel
   carries the absolute side-to-move colour, which on every reachable position is already a
   function of the two stone planes -- this engine never passes (a forbidden Black move ends
   the game rather than skipping the turn), so Black to move implies equal stone counts and
   White to move implies Black is one stone ahead. The plane is therefore informationally
-  redundant, Renju included, and this line measures whether the network leans on it anyway:
-  a measured FreeStyle model ignores it completely (shift 0.000), while a Renju model would
-  be expected to use it as a shortcut for "am I Black". A *bounded* use is fine and passes;
-  a near-saturated shift (`COLOUR_COLLAPSE_VALUE_SHIFT = 1.5`, i.e. a captured value of +1
-  flipping to -1) is not: it means the value head answers "whose turn is it" and almost
-  nothing about the board, which is easy to miss because such a weight still looks sharp on
-  the tactics probes. Measured on a broken Renju lineage (2026-09-13): 1.999, with v=+0.998
-  on a won position and v=+0.060 on a lost one.
+  redundant, Renju included, and this line reports whether the network leans on it anyway,
+  naming the probe behind the number (`1.799 (win in one (diagonal gap): -0.802 -> +0.997)`).
+  A shift at or above `COLOUR_PLANE_LEAN_VALUE_SHIFT = 1.5` is printed as `FAIL ... (advisory)`
+  but never rejected on its own, because the flipped input is one the engine can never
+  produce: it contradicts the stone parity, so a value function of the perspective-normalised
+  stone planes is free to weight the redundant plane however it likes and still be exactly
+  right on every position the search asks about (the reference FreeStyle weight measures
+  `color_scale == 0` with a colour-input column of ~5e-5, i.e. it *learned* to ignore the
+  plane -- that is a valid solution, not the required one).
+  Its resolution is limited in the other direction as well: the shift is read *after* the
+  value head's `tanh`, so a decisive weight reports ~0.0 no matter how hard it leans on the
+  plane -- a control weight built with a 3.0 weight on the colour input reports 0.296, while a
+  value head that answers the plane *alone* (constant value, no board dependence) reports
+  1.049. That ordering is backwards, which is why the value criteria are the gate (measured
+  on that collapsed control: `value (win in one)`, `value (winning)` and `value (losing)` all
+  FAIL) and this line is a pointer to the weight to look at first when a value goes wrong
+  where the board signal is weak. The 2026-09-13 Renju lineage (1.999, with v=+0.998 on a
+  won position and v=+0.060 on a lost one) is rejected by `value (losing)` for the same
+  reason.
 - **per-position answer**: the six raw answers (top-1 index, its probability and the value)
   behind the aggregate criteria. A value that is wrong on one shape and a value that is the
   same everywhere are different bugs with the same headline, and this block is what tells
@@ -323,8 +345,11 @@ old 3-channel weight needs a re-export with `train/convert_model.py`, a missing 
 missing, a probed weight is below the bar) and `generate` **exits non-zero**: under the
 `set -e` of `train_loop.sh` the round ends instead of spinning, because a broken best makes
 every round identical -- generate refuses, the learner still trains on the stale window from
-the broken weight, and the candidate comes back worse (measured: `colour plane` collapse
-1.998 after one round, 17 rounds burnt on a lineage whose best had a broken value head).
+the broken weight, and the candidate comes back worse (measured 2026-09-13: one round turned
+the value head into a colour-plane collapse of 1.998 whose value probes read v=+0.060 on a
+lost position, so the value criteria rejected it; 17 rounds burnt on a lineage whose best had
+a broken value head). Advisory lines do not reject anything by themselves, so the value
+criteria -- `value (win in one)` and the value signs -- are what has to be watched here.
 `EVAL_SKIP_VERIFY=1` keeps the loop running if you want to watch it anyway.
 
 ```
@@ -471,7 +496,8 @@ The training flow needs the Python side to produce initial ONNX weights before t
 The learner's worst failures are silent: a window whose games abort (no winner, so every ply
 is labelled `v = 0`) or whose winner is always the same colour still trains, still lowers the
 value loss, and only shows up much later as a value head that answers "whose turn is it" --
-which the probe then reports as a colour-plane collapse. This command audits the newest-first
+which the probe then reports as a value that leans on the constant colour plane, and which
+`value (win in one)` and the value signs reject. This command audits the newest-first
 window the learner would consume and prints the label statistics that make it visible:
 
 ```bash
@@ -517,8 +543,8 @@ termination check: 38/40 game(s) end the way their labels say (...)
 
 That note is worth reading on a Renju build: a game that ends by Black's forbidden move labels
 every Black-to-move ply as "losing", so a window dominated by those games teaches a value head
-"whose turn is it" instead of "who is winning" -- the same colour-plane collapse the probe
-reports on the weight side. Use `--no-termination-check` to skip the pass.
+"whose turn is it" instead of "who is winning" -- the label-side cause of the colour-plane
+collapse the probe reports on the weight side. Use `--no-termination-check` to skip the pass.
 
 A window smaller than 5 readable games reports the statistics without a verdict, since a
 single game is always won by one colour. It exits 1 on a degenerate window, so it can gate a
@@ -534,7 +560,8 @@ Dirichlet noise, the stored target π and the move actually played all disagreed
 `RenjuJudge` that decides the game: a Black move the judge rejects ends the game with White
 winning, which is the "the mover loses on its own move" ending the label audit notes. A window
 made of those games labels every Black-to-move ply as losing, so the value head is trained on
-`v = f(side to move)` and collapses onto the constant colour plane the probe reports.
+`v = f(side to move)` and collapses onto the constant colour plane the probe reports (its
+`colour plane` line names the probe behind the number; the value criteria reject the weight).
 
 `Gomoku::refresh_playable_moves` closes that gap by asking the same `RenjuJudge::is_legal` the
 judge asks and clearing the points it rejects:

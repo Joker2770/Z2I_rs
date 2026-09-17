@@ -229,29 +229,52 @@ pub struct ProbeMeasurement {
 /// move ends the game instead), so Black to move implies equal stone counts and White to move
 /// implies Black is one stone ahead. The plane is therefore informationally redundant -- for
 /// Renju as well -- and this measurement says whether a trained network *uses* it anyway:
-/// a value near zero means the plane is ignored, a large value means the network leans on it
-/// (which is the learnability the plane was added for, at the cost of a real input).
+/// a value near zero means the plane is ignored, a large value means the network leans on it.
+///
+/// **Read it as a diagnostic, not as a verdict.** The flipped state is one the engine can
+/// never produce (it contradicts the parity of the stone planes), so the answer to it says
+/// nothing about how the weight plays: a value function of the perspective-normalised stone
+/// planes is free to put any amount of weight on the redundant plane and still be exactly
+/// right on every position the search asks about, and a colour-symmetric rule gives training
+/// no reason to prefer a weight of zero there (the reference FreeStyle weight measures
+/// `color_scale == 0` with a colour-input column of ~5e-5, i.e. it learned to ignore the
+/// plane -- that is a solution, not the required one). The on-distribution signature of the
+/// failure this number gestures at -- a value head that answers "whose turn is it" -- is a
+/// value that does not depend on the board at all, which the per-probe value criteria catch
+/// directly (measured 2026-09-17: a control weight whose value is the colour alone reports
+/// 1.049 here, *below* the line, and is rejected by `value (win in one)` / `value (winning)`
+/// / `value (losing)` instead).
+///
+/// Its resolution is limited in the other direction too: the shift is measured *after* the
+/// value head's `tanh`, so a decisive network reports ~0.0 however hard it leans on the plane
+/// and the number only has room to move where the weight is unsure (measured: the reference
+/// weight with a 3.0 weight wired onto its colour input still reports 0.296).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ColourPlaneSensitivity {
+    /// Largest |value_normal - value_flipped| over the probe set.
     pub max_value_shift: f64,
     pub max_prob_shift: f64,
+    /// The probe behind `max_value_shift` with both of its answers: one aggregate number says
+    /// that the weight reacts, this says where, and the criterion prints it.
+    pub worst: Option<ColourPlanePoint>,
 }
 
-/// Value shift above which the network reads the side to move off the constant colour plane
-/// instead of off the board.
+/// The probe that reacted most to the colour-plane flip, with both answers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColourPlanePoint {
+    pub probe: &'static str,
+    pub normal: f64,
+    pub flipped: f64,
+}
+
+/// Value shift above which the network is reported as leaning on the constant colour plane.
 ///
-/// The plane is informationally redundant on every reachable position (it is a function of
-/// the two stone planes, see [`ColourPlaneSensitivity`]), so a healthy network may ignore it
-/// completely -- the reference FreeStyle model measures 0.000. A *near-saturated* shift, on
-/// the other hand, means the value head answers "whose turn is it" and almost nothing about
-/// the position: a captured value of +1 flipping to -1 gives a shift of ~2.0. That is a
-/// silent failure, because such a weight still looks sharp on the tactics probes.
-///
-/// The line is deliberately well above any legitimate colour use (a genuinely colour-
-/// asymmetric Renju value has no reason to move by more than a fraction of a point when a
-/// constant plane is negated), so this gate fires on collapse rather than on style.
-/// `EVAL_SKIP_VERIFY=1` remains the escape hatch for studying a weight that trips it.
-pub const COLOUR_COLLAPSE_VALUE_SHIFT: f64 = 1.5;
+/// A shift this size means the flip moves the value across the decision boundary, i.e. the
+/// plane carries a real share of the answer instead of numeric noise. It is a *diagnostic*
+/// (see [`ColourPlaneSensitivity`]): the flipped input is unreachable, so a weight that trips
+/// it is reported with the probe that produced the number, and it is evaluated on the games
+/// like any other candidate unless the on-distribution value criteria also fail.
+pub const COLOUR_PLANE_LEAN_VALUE_SHIFT: f64 = 1.5;
 
 impl ColourPlaneSensitivity {
     /// Whether the network is indifferent to the plane (numeric noise only).
@@ -259,9 +282,20 @@ impl ColourPlaneSensitivity {
         self.max_value_shift < 0.01 && self.max_prob_shift < 0.01
     }
 
-    /// Whether the value follows the plane alone, i.e. the board no longer decides it.
-    pub fn is_collapsed(&self) -> bool {
-        self.max_value_shift >= COLOUR_COLLAPSE_VALUE_SHIFT
+    /// Whether the plane carries a real share of the answer.
+    pub fn leans_on_the_plane(&self) -> bool {
+        self.max_value_shift >= COLOUR_PLANE_LEAN_VALUE_SHIFT
+    }
+
+    /// The worst probe rendered as `name: normal -> flipped`, for the criterion's detail.
+    fn worst_text(&self) -> String {
+        match self.worst {
+            Some(worst) => format!(
+                "{}: {:+.3} -> {:+.3}",
+                worst.probe, worst.normal, worst.flipped
+            ),
+            None => "(no probe)".to_string(),
+        }
     }
 }
 
@@ -272,8 +306,17 @@ pub fn colour_plane_sensitivity(
 ) -> ColourPlaneSensitivity {
     let mut max_value_shift: f64 = 0.0;
     let mut max_prob_shift: f64 = 0.0;
+    let mut worst: Option<ColourPlanePoint> = None;
     for (normal, other) in measurements.iter().zip(flipped.iter()) {
-        max_value_shift = max_value_shift.max((normal.value - other.value).abs());
+        let shift = (normal.value - other.value).abs();
+        if worst.is_none() || shift > max_value_shift {
+            max_value_shift = shift;
+            worst = Some(ColourPlanePoint {
+                probe: normal.name,
+                normal: normal.value,
+                flipped: other.value,
+            });
+        }
         // policy agreement: 1 - sum(min(p_a, p_b)) would need the full vectors, so compare
         // the top-1 probability and whether the argmax moved
         max_prob_shift = max_prob_shift.max((normal.top1_prob - other.top1_prob).abs());
@@ -284,6 +327,7 @@ pub fn colour_plane_sensitivity(
     ColourPlaneSensitivity {
         max_value_shift,
         max_prob_shift,
+        worst,
     }
 }
 
@@ -369,13 +413,23 @@ impl ProbeReport {
     }
 }
 
+/// `win in one (diagonal gap)` -> `diagonal gap`: the criteria lines are narrow.
+fn shape_label(name: &str) -> &str {
+    name.trim_start_matches("win in one (")
+        .trim_end_matches(')')
+}
+
 /// Turn raw measurements into a verdict.
 ///
 /// Geometry and the value sign are hard requirements: a network that returns no usable
 /// policy mass or a value with the wrong sign will not play well at any simulation count.
 /// Tactics are required in bulk rather than individually -- a weak but sane weight may miss
 /// one of the three win-in-one shapes (which are only seen through a raw policy, with no
-/// search), while a destroyed one misses all of them. The block probe only warns.
+/// search), while a destroyed one misses all of them -- but the *value* of those shapes is a
+/// hard requirement on every one of them, because each is a decided position (the mover has
+/// an immediate five): calling a won position lost is a sign error the search cannot repair,
+/// and it is the only place a value head that reads the side to move off the redundant colour
+/// plane shows up on-distribution. The block probe only warns.
 pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> ProbeReport {
     let mut criteria = Vec::new();
 
@@ -432,10 +486,7 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
             let shapes: Vec<String> = win_in_one
                 .iter()
                 .map(|m| {
-                    let label = m
-                        .name
-                        .trim_start_matches("win in one (")
-                        .trim_end_matches(')');
+                    let label = shape_label(m.name);
                     if m.expected == Some(m.top1) {
                         format!("{label} p={:.3}", m.top1_prob)
                     } else {
@@ -451,6 +502,45 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
             )
         },
     });
+
+    // The value on the same shapes is not a bulk requirement: a win in one is a won position,
+    // so its value must come out positive on every shape. A weight whose trunk does not see
+    // one of the four-in-a-row shapes says something else there, and a value head that leans
+    // on the colour plane answers "whose turn is it" precisely where the board signal is weak
+    // (measured 2026-09-17 on a FreeStyle candidate: `diagonal gap` v=-0.802 with
+    // `win in one` still reporting 2/3 solved, which the colour line then flagged as a
+    // collapse without this check ever judging the number).
+    if !win_in_one.is_empty() {
+        let wrong_sign: Vec<&ProbeMeasurement> = win_in_one
+            .iter()
+            .copied()
+            .filter(|m| m.value <= 0.0)
+            .collect();
+        criteria.push(Criterion {
+            name: "value (win in one)".to_string(),
+            critical: true,
+            passed: wrong_sign.is_empty(),
+            detail: if wrong_sign.is_empty() {
+                format!(
+                    "v={}",
+                    win_in_one
+                        .iter()
+                        .map(|m| format!("{:+.3}", m.value))
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            } else {
+                format!(
+                    "{} on a position the mover wins in one",
+                    wrong_sign
+                        .iter()
+                        .map(|m| format!("{} v={:+.3}", shape_label(m.name), m.value))
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                )
+            },
+        });
+    }
 
     for measurement in measurements
         .iter()
@@ -523,30 +613,40 @@ pub fn score_probes(measurements: &[ProbeMeasurement], elapsed: Duration) -> Pro
     }
 }
 
-/// The colour-plane criterion, split out of [`probe_weight`] so the collapse threshold can
-/// be tested without a forward pass.
+/// The colour-plane criterion, split out of [`probe_weight`] so the thresholds can be tested
+/// without a forward pass.
 ///
-/// It is **critical**: a value driven by the constant plane alone cannot be trusted on any
-/// position, and the probe is the last check before such a weight either generates a round
-/// of self-play data or gets promoted.
+/// It is **advisory**. The plane is redundant on every reachable position and the flipped
+/// state is one the engine never produces, so a large reaction is a shortcut this weight
+/// happens to lean on, not evidence that it will misplay (see
+/// [`ColourPlaneSensitivity`]). A weight that leans on it is worth printing anyway: it is the
+/// one whose value goes wrong first on the positions where the board signal is weak, and the
+/// critical value criteria -- `value (win in one)` and the value signs -- are what turn that
+/// into a rejection.
 fn colour_plane_criterion(sensitivity: ColourPlaneSensitivity) -> Criterion {
-    let collapsed = sensitivity.is_collapsed();
+    let leans = sensitivity.leans_on_the_plane();
     Criterion {
         name: "colour plane".to_string(),
-        critical: true,
-        passed: !collapsed,
-        detail: format!(
-            "flipping ch3 shifts value by {:.3} and policy top-1 by {:.3} -- {}",
-            sensitivity.max_value_shift,
-            sensitivity.max_prob_shift,
-            if collapsed {
-                "collapsed: the value follows the side to move, not the board"
-            } else if sensitivity.is_ignored() {
-                "ignored, so the plane is redundant here"
-            } else {
-                "used by the network"
-            }
-        ),
+        critical: false,
+        passed: !leans,
+        detail: if sensitivity.is_ignored() {
+            format!(
+                "flipping ch3 shifts value by {:.3} and policy top-1 by {:.3} -- unused",
+                sensitivity.max_value_shift, sensitivity.max_prob_shift
+            )
+        } else {
+            format!(
+                "flipping ch3 shifts value by {:.3} ({}) and policy top-1 by {:.3} -- {}",
+                sensitivity.max_value_shift,
+                sensitivity.worst_text(),
+                sensitivity.max_prob_shift,
+                if leans {
+                    "leans on the redundant plane, which no reachable position can ask for"
+                } else {
+                    "bounded use of the redundant plane"
+                }
+            )
+        },
     }
 }
 
@@ -584,7 +684,9 @@ pub async fn probe_weight(
 
         // same position with the constant colour plane negated: on every reachable position
         // that plane is already implied by the stone planes, so a network that has really
-        // learned the game has no reason to move its answer
+        // learned the game has no reason to move its answer. The state is unreachable, so the
+        // measurement is a diagnostic of that shortcut and never a verdict -- see
+        // `ColourPlaneSensitivity`.
         if cfg::INPUT_CHANNEL_SIZE >= 4 {
             let mut state = network.transform_gomoku_2_tensor(&game);
             let plane = game.get_board_size() as usize * game.get_board_size() as usize;
@@ -900,6 +1002,36 @@ mod tests {
     }
 
     #[test]
+    fn a_won_position_with_a_losing_value_fails() {
+        // 2026-09-17 FreeStyle candidate: the raw policy still solved 2/3 win-in-one shapes and
+        // the dedicated value probes kept their signs, while the diagonal win in one came back
+        // at -0.802. Only this criterion judges that number.
+        let mut broken = healthy();
+        broken[2].value = -0.802;
+        let report = score_probes(&broken, Duration::ZERO);
+        assert!(!report.passed(), "{}", report.summary());
+        let failure = report
+            .failures()
+            .into_iter()
+            .find(|criterion| criterion.name == "value (win in one)")
+            .expect("the value of the won shapes is checked");
+        assert!(failure.critical);
+        // the probe names are short in this fixture; the point is that the failing shape and
+        // its value are both named
+        assert!(failure.detail.contains("d v=-0.802"), "{}", failure.detail);
+        assert!(
+            failure.detail.contains("the mover wins in one"),
+            "{}",
+            failure.detail
+        );
+
+        // a healthy weight prints the three values, so a regression is comparable at a glance
+        let line = score_probes(&healthy(), Duration::ZERO).summary();
+        assert!(line.contains("value (win in one)"), "{line}");
+        assert!(line.contains("v=+0.400, +0.500, +0.600"), "{line}");
+    }
+
+    #[test]
     fn one_missed_tactic_is_tolerated_and_the_block_only_warns() {
         let mut weak = healthy();
         weak[0].top1 = 99;
@@ -969,40 +1101,56 @@ mod tests {
         assert!((sensitivity.max_value_shift - 0.4).abs() < 1e-12);
         assert!(sensitivity.max_prob_shift >= normal[1].top1_prob);
         assert!(!sensitivity.is_ignored());
+        // the criterion names the probe behind the number, so a log can be read without
+        // re-running the probe
+        let worst = sensitivity.worst.expect("the worst probe is recorded");
+        assert_eq!(worst.probe, normal[0].name);
+        assert!((worst.normal - normal[0].value).abs() < 1e-12);
+        assert!((worst.flipped - flipped[0].value).abs() < 1e-12);
 
         // and indifference is the other extreme
         let same = colour_plane_sensitivity(&normal, &normal);
         assert!(same.is_ignored());
         assert_eq!(same.max_value_shift, 0.0);
+        assert!(same.worst.is_some(), "still a measurement");
     }
 
     #[test]
-    fn is_collapsed_fires_only_on_a_near_saturated_shift() {
+    fn leaning_on_the_colour_plane_fires_only_on_a_large_shift() {
         let sensitivity = |shift: f64| ColourPlaneSensitivity {
             max_value_shift: shift,
             max_prob_shift: 0.0,
+            worst: None,
         };
-        assert!(!sensitivity(0.0).is_collapsed());
-        assert!(!sensitivity(0.31).is_collapsed());
-        assert!(!sensitivity(COLOUR_COLLAPSE_VALUE_SHIFT - 0.001).is_collapsed());
-        assert!(sensitivity(COLOUR_COLLAPSE_VALUE_SHIFT).is_collapsed());
-        // the measured Renju failure of 2026-09-13
-        assert!(sensitivity(1.999).is_collapsed());
+        assert!(!sensitivity(0.0).leans_on_the_plane());
+        assert!(!sensitivity(0.31).leans_on_the_plane());
+        assert!(!sensitivity(COLOUR_PLANE_LEAN_VALUE_SHIFT - 0.001).leans_on_the_plane());
+        assert!(sensitivity(COLOUR_PLANE_LEAN_VALUE_SHIFT).leans_on_the_plane());
+        // the measured Renju failure of 2026-09-13, and the FreeStyle candidate of 2026-09-17
+        assert!(sensitivity(1.999).leans_on_the_plane());
+        assert!(sensitivity(1.799).leans_on_the_plane());
     }
 
     #[test]
-    fn a_collapsed_colour_plane_is_a_critical_failure() {
-        let criterion = colour_plane_criterion(ColourPlaneSensitivity {
-            max_value_shift: 1.999,
-            max_prob_shift: 0.304,
+    fn leaning_on_the_colour_plane_is_advisory() {
+        // the flipped input is unreachable, so a large reaction cannot reject on its own: the
+        // on-distribution value criteria are what decide (see `score_probes`)
+        let leans = colour_plane_criterion(ColourPlaneSensitivity {
+            max_value_shift: 1.799,
+            max_prob_shift: 0.332,
+            worst: Some(ColourPlanePoint {
+                probe: "win in one (diagonal gap)",
+                normal: -0.802,
+                flipped: 0.997,
+            }),
         });
-        assert!(criterion.critical);
-        assert!(!criterion.passed);
-        assert!(
-            criterion.detail.contains("collapsed"),
-            "{}",
-            criterion.detail
-        );
+        assert!(!leans.critical, "{} said {}", leans.name, leans.detail);
+        assert!(!leans.passed);
+        assert!(leans.detail.contains("leans"), "{}", leans.detail);
+        // the probe behind the number and both of its answers are quoted
+        let quoted = "-0.802 -> +0.997";
+        assert!(leans.detail.contains("diagonal gap"), "{}", leans.detail);
+        assert!(leans.detail.contains(quoted), "{}", leans.detail);
     }
 
     #[test]
@@ -1010,20 +1158,18 @@ mod tests {
         let ignored = colour_plane_criterion(ColourPlaneSensitivity {
             max_value_shift: 0.0,
             max_prob_shift: 0.0,
+            worst: None,
         });
-        assert!(ignored.critical && ignored.passed);
-        assert!(ignored.detail.contains("ignored"), "{}", ignored.detail);
+        assert!(ignored.passed && !ignored.critical);
+        assert!(ignored.detail.contains("unused"), "{}", ignored.detail);
 
         let used = colour_plane_criterion(ColourPlaneSensitivity {
             max_value_shift: 0.42,
             max_prob_shift: 0.13,
+            worst: None,
         });
         assert!(used.passed, "a bounded colour use is not a failure");
-        assert!(
-            used.detail.contains("used by the network"),
-            "{}",
-            used.detail
-        );
+        assert!(used.detail.contains("bounded use"), "{}", used.detail);
     }
 
     #[test]

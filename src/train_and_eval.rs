@@ -1185,14 +1185,17 @@ async fn main() {
                         None,
                     ),
                 };
-                print!("{report_text}");
                 if let Some(reason) = rejection {
+                    // the rejection message carries the report, so it goes out once (here)
+                    // rather than twice: a captured log with two identical probe blocks
+                    // reads like two probed weights
                     reject_candidate(
                         best_weight,
                         &format!("candidate rejected before evaluation: {reason}\n{report_text}"),
                     );
                     return;
                 }
+                print!("{report_text}");
                 // Best is the incumbent and stays best either way, but its probe line is the
                 // baseline the candidate's numbers must be read against: a candidate that
                 // passes while being far flatter than best is weaker, not broken. If best

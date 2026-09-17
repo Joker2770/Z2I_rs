@@ -3,8 +3,9 @@
 The learner's worst failures are silent. A round whose games abort (no winner, so every ply
 is labelled `v = 0`), or whose winner is always the same colour, still trains, still lowers
 the value loss, and only shows up many rounds later as a value head that answers "whose turn
-is it" instead of "who is winning" -- which the weight probe then reports as a colour-plane
-collapse (`COLOUR_COLLAPSE_VALUE_SHIFT` in `src/probe.rs`). This command prints the label
+is it" instead of "who is winning" -- which the weight probe then reports as a value that
+leans on the redundant colour plane (`COLOUR_PLANE_LEAN_VALUE_SHIFT` in `src/probe.rs`) and
+which its value criteria reject. This command prints the label
 statistics that make those datasets visible before 20 rounds are spent on them.
 
 It also verifies the labels against the **final position** of every game: the stored `v` and
@@ -476,8 +477,9 @@ def print_report(report, skipped, candidates, expect_rule, board):
 
     Degenerate means the label stream cannot teach a value function: no winner in most games
     (every ply labelled 0), a single-colour winner rate, a `v` that is saturated with the side
-    to move -- the last one is precisely the ch3 shortcut a value head collapses into, and what
-    `COLOUR_COLLAPSE_VALUE_SHIFT` in `src/probe.rs` reports on the weight side -- or labels
+    to move -- the last one is precisely the ch3 shortcut a value head collapses into, which
+    `COLOUR_PLANE_LEAN_VALUE_SHIFT` in `src/probe.rs` reports on the weight side (as an
+    advisory line; the probe's value criteria are what reject such a weight) -- or labels
     that the final position contradicts.
     """
     games = report["games"]
