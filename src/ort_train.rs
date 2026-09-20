@@ -212,7 +212,7 @@ fn player_channels(current_player: i32, stone: i32) -> (f32, f32) {
 fn build_batch_arrays(samples: &[Sample]) -> (Array4<f32>, Array2<f32>, Array2<f32>) {
     let mut states = Array4::<f32>::zeros((
         samples.len(),
-        cfg::CHANNEL_SIZE as usize,
+        cfg::INPUT_CHANNEL_SIZE as usize,
         BOARD_SIZE,
         BOARD_SIZE,
     ));
@@ -519,7 +519,7 @@ mod tests {
         let (states, _policies, _values) = build_batch_arrays(&samples);
         assert_eq!(
             states.shape(),
-            &[2, cfg::CHANNEL_SIZE as usize, BOARD_SIZE, BOARD_SIZE][..]
+            &[2, cfg::INPUT_CHANNEL_SIZE as usize, BOARD_SIZE, BOARD_SIZE][..]
         );
 
         // sample 0: Black to move -> ch3 is a constant +1 plane, marker at position 1
