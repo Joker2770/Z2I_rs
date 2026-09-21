@@ -130,6 +130,13 @@ impl MCTSNode {
         }
     }
 
+    /// Back up one leaf evaluation.
+    ///
+    /// `value` is the value of the transition into `self` **as `self`'s parent's mover sees
+    /// it** (`select` maximizes `Q = total_value / visits` at the parent), so the sign flips at
+    /// every level on the way up. Callers hold the value the other way round — the network
+    /// returns it for the side to move *at the child*, i.e. the parent's opponent — and pass it
+    /// negated (see the call sites in `simulation`).
     pub fn backpropagate(&self, value: f64) {
         if let Some(p) = self.parent() {
             p.backpropagate(-value);
@@ -890,7 +897,13 @@ impl MCTS {
                     node.expand(i as u16, action_priors[i]);
                 }
             }
-            node.backpropagate(value);
+            // `value` is the value for the side to move *at this node*, i.e. for the parent's
+            // opponent, while `select` maximizes the children's Q and therefore has to read the
+            // parent's point of view: back the transition up negated (upstream does the same in
+            // `node->backup(-value)`). Without the negation the search ranks the moves by the
+            // *opponent's* value and prefers its own worst move — and a winning move, whose
+            // child is a terminal loss for the opponent, is the lowest ranked move of all.
+            node.backpropagate(-value);
         } else {
             value = if color == Color::Blank {
                 0.0
@@ -900,7 +913,8 @@ impl MCTS {
                 -1.0
             };
             let _tree_guard = self.tree_lock.lock().unwrap_or_else(|e| e.into_inner());
-            node.backpropagate(value);
+            // same negation as the running branch above: `value` is for the side to move here
+            node.backpropagate(-value);
         }
     }
 }
@@ -1393,5 +1407,115 @@ mod tests {
         // One combined call runs exactly one simulation batch — not two searches.
         let root_visits = mcts.root.borrow().visits.borrow().load(Ordering::SeqCst);
         assert_eq!(root_visits, sims);
+    }
+
+    /// A search must rank the move that wins at once above a move that throws the game away.
+    ///
+    /// The backup has to carry the sign of the *parent's* mover (`Q` is read by `select` at the
+    /// parent); backing the value up unnegated instead makes every node carry the value of its
+    /// own mover, i.e. the parent maximizes the *opponent's* value and avoids winning — measured
+    /// on generated self-play data, the winning move was ranked first in 0 of 58 winning
+    /// positions, and games were decided by Dirichlet noise instead of by the search.
+    ///
+    /// Fixture (3x3, three in a row, Black to move, White's `(1, 0)(1, 1)` is one move from a
+    /// win):
+    ///
+    /// ```text
+    ///   x x .     (0, 2) wins immediately
+    ///   o o .     (1, 2) blocks and draws
+    ///   o . x     (2, 0) loses: White answers (1, 2)
+    /// ```
+    ///
+    /// Both terminal signals are in the tree, so the two conventions produce exactly opposite
+    /// answers: the winning move's Q must be `+1` for the mover and the losing move's `-1`.
+    #[tokio::test]
+    async fn search_must_rank_the_immediate_win_first() {
+        const SIZE: u16 = 3;
+        let idx = |row: u16, col: u16| row * SIZE + col;
+        let win = idx(0, 2);
+        let block = idx(1, 2);
+        let throw_away = idx(2, 0);
+
+        let mut game = Gomoku::new(3, 3).expect("valid test board");
+        let stones = [
+            (idx(0, 0), Color::Black),
+            (idx(0, 1), Color::Black),
+            (idx(2, 2), Color::Black),
+            (idx(1, 0), Color::White),
+            (idx(1, 1), Color::White),
+            (idx(2, 1), Color::White),
+        ];
+        assert!(game.load_position(&stones, Color::Black));
+        for action in [win, block, throw_away] {
+            assert_eq!(
+                game.get_legal_moves()[action as usize],
+                1,
+                "fixture action {action} must be legal"
+            );
+        }
+        assert_eq!(
+            game.get_game_status().0,
+            GameStage::Running,
+            "the fixture must be a live decision point"
+        );
+
+        // 512 visits, not for the win (the first selection already lands on it) but for the
+        // throw-away branch: it only becomes provably bad three plies deep, and with too few
+        // visits the branch is never expanded so its Q is still 0. Measured with 512:
+        // win 499 visits Q +1.000, block 8 (+0.125, one line where White errs), throw-away 4.
+        let sims = 512usize;
+        let mcts = MCTS::new(
+            None,
+            1.0,
+            3.0,
+            AtomicUsize::new(sims),
+            1,
+            game.get_action_size(),
+        );
+        // one search, then read the tree it produced
+        let probs = mcts.get_action_probs(&game, 1.0).await;
+        assert!((probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+
+        let child = |action: u16| {
+            mcts.root
+                .borrow()
+                .children
+                .borrow()
+                .iter()
+                .find(|child| child.action == action)
+                .map(Rc::clone)
+        };
+        let stats = |action: u16| {
+            let node = child(action).expect("every legal point must have been expanded");
+            let visits = node.visits.borrow().load(Ordering::SeqCst);
+            assert!(visits > 0, "action {action} was never visited");
+            let value = *node.total_value.borrow();
+            (visits, value / visits as f64)
+        };
+
+        let (win_visits, win_q) = stats(win);
+        let (block_visits, block_q) = stats(block);
+        let (throw_visits, throw_q) = stats(throw_away);
+
+        assert!(
+            win_q > 0.5,
+            "a winning move must look good to the mover, got Q = {win_q:+.3}"
+        );
+        assert!(
+            throw_q < 0.0,
+            "a move that loses must look bad to the mover, got Q = {throw_q:+.3} \
+             ({throw_visits} visits)"
+        );
+        assert!(
+            win_visits > throw_visits,
+            "the search must explore the win ({win_visits}) more than the throw-away \
+             ({throw_visits})"
+        );
+        assert_eq!(
+            mcts.get_best_action_after_simulation(&game),
+            win,
+            "the searched move must be the win; visits = win {win_visits}, block {block_visits} \
+             (Q {block_q:+.3}), throw-away {throw_visits}"
+        );
     }
 }
