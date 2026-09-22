@@ -1,6 +1,6 @@
 [package]
 name = "Z2I_rs"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 
 [features]
@@ -32,12 +32,12 @@ backend-tract = ["ort/alternative-backend"]
 
 
 [dependencies]
-bitflags = "2.13.1"
+bitflags = "2.13.2"
 futures = "0.3.34"
 hex = "0.4.3"
 ndarray = "0.17.2"
 ort = "2.0.0-rc.13"
-rand = "0.10.2"
+rand = "0.10.3"
 rand_distr = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.0"
@@ -50,7 +50,7 @@ tokio = { version = "1.53.1", features = [
     "io-std",
     "io-util",
 ] }
-toml = "1.1.4"
+toml = "1.1.6+spec-1.1.0"
 
 [[bin]]
 name = "pbrain-Z2I_rs"
