@@ -362,6 +362,11 @@ impl EvalOutcome {
         (f64::from(self.a_win) + cfg::DRAW_SCORE * f64::from(self.draw)) / f64::from(total)
     }
 
+    /// Whether this evaluation is complete and has games that can be scored.
+    pub fn has_usable_result(&self) -> bool {
+        self.complete && self.a_win + self.b_win + self.draw > 0
+    }
+
     /// Pair decisions for the sign test: wins, losses and ties (pairs scoring exactly
     /// 0.5, which carry no information about which side is stronger).
     pub fn pair_decisions(&self) -> (u32, u32, u32) {
@@ -1286,11 +1291,17 @@ async fn main() {
                 + " tie:"
                 + &result.draw.to_string()
                 + "\n";
-            // the candidate inherits best's rating as its starting point, so lineage ratings
-            // accumulate monotonically across iterations
-            inherit_elo(current_weight, best_weight);
-            let elo_info = update_elo(current_weight, best_weight, &result);
-            result_log_info.push_str(&elo_info);
+            let has_usable_result = result.has_usable_result();
+            if has_usable_result {
+                // the candidate inherits best's rating as its starting point, so lineage ratings
+                // accumulate monotonically across iterations
+                inherit_elo(current_weight, best_weight);
+                let elo_info = update_elo(current_weight, best_weight, &result);
+                result_log_info.push_str(&elo_info);
+            } else {
+                result_log_info
+                    .push_str("Elo unchanged: evaluation incomplete or no usable games\n");
+            }
             let win_ratio = result.win_ratio();
             // Paired, colour-swapped openings: the first-move advantage cancels inside
             // each pair, so a sign test over pair scores is a much sharper statement
@@ -1338,7 +1349,7 @@ async fn main() {
             result_log_info.push_str(&cost_info);
             println!("{}", cost_info.trim_end());
 
-            if !result.complete || result.a_win + result.b_win + result.draw == 0 {
+            if !has_usable_result {
                 // no usable result: never promote on a failed evaluation
                 result_log_info
                     .push_str("evaluation produced no usable result, candidate rejected\n");
@@ -1466,11 +1477,19 @@ async fn main() {
                 + " tie: "
                 + &result.draw.to_string()
                 + "\n";
-            // the candidate likewise inherits best's rating, keeping the same rating scale as
-            // eval_with_winner; the random baseline (-1) drifts naturally as a fixed-strength anchor
-            inherit_elo(current_weight_id, best_weight_id);
-            let elo_info = update_elo(current_weight_id, -1, &result);
-            result_log_info.push_str(&elo_info);
+            // Elo is updated only for a complete evaluation; an incomplete result must not
+            // inherit ratings either, since that would still modify elo.txt.
+            let has_usable_result = result.has_usable_result();
+            if has_usable_result {
+                // the candidate likewise inherits best's rating, keeping the same rating scale as
+                // eval_with_winner; the random baseline (-1) drifts naturally as a fixed-strength anchor
+                inherit_elo(current_weight_id, best_weight_id);
+                let elo_info = update_elo(current_weight_id, -1, &result);
+                result_log_info.push_str(&elo_info);
+            } else {
+                result_log_info
+                    .push_str("Elo unchanged: evaluation incomplete or no usable games\n");
+            }
             let win_ratio = result.win_ratio();
             // wall-clock accounting, same as eval_with_winner (no pair statistic here:
             // the random anchor is not a colour-paired weight)
@@ -1488,7 +1507,7 @@ async fn main() {
             result_log_info.push_str(&cost_info);
             println!("{}", cost_info.trim_end());
 
-            if !result.complete || result.a_win + result.b_win + result.draw == 0 {
+            if !has_usable_result {
                 result_log_info
                     .push_str("evaluation produced no usable result, candidate rejected\n");
             } else if win_ratio > cfg::UPDATE_THRESHOLD {
@@ -1659,6 +1678,29 @@ mod tests {
         };
         assert!((all_draws.win_ratio() - 0.5).abs() < 1e-12);
         assert_eq!(all_draws.pair_decisions(), (0, 0, 2));
+    }
+
+    #[test]
+    fn only_complete_nonempty_evaluations_have_usable_results() {
+        let incomplete = EvalOutcome {
+            a_win: 2,
+            complete: false,
+            ..EvalOutcome::default()
+        };
+        assert!(!incomplete.has_usable_result());
+
+        let empty = EvalOutcome {
+            complete: true,
+            ..EvalOutcome::default()
+        };
+        assert!(!empty.has_usable_result());
+
+        let complete = EvalOutcome {
+            draw: 1,
+            complete: true,
+            ..EvalOutcome::default()
+        };
+        assert!(complete.has_usable_result());
     }
 
     #[test]
