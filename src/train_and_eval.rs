@@ -47,7 +47,7 @@ pub fn sims_for_weight(weight_id: u16) -> usize {
 ///
 /// `EVAL_SIMS` pins the evaluation to a fixed budget: the generation schedule
 /// (`sims_for_weight`) grows to `SIMS_CAP`, so evaluating a late generation costs up to
-/// three times a generation-0 evaluation for the same number of games. Pinning the
+/// twice a generation-0 evaluation for the same number of games. Pinning the
 /// budget keeps an evaluation round inside a short Colab session, and both sides always
 /// get the same value.
 fn eval_sims_for(weight_id: u16) -> (u16, &'static str) {

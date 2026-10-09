@@ -46,14 +46,20 @@ pub mod cfg {
     pub const DEFAULT_SIMULATION_NUM: usize = 400;
     // temperature anchors (see cfg::temp_at): full exploration for the opening plies,
     // then an exponential decay that reaches GREEDY_TEMP by the GREEDY_FROM_STEP-th ply.
-    // 36 plies is the measured average self-play game length of this profile (iter-1 renju
-    // log: 46840 samples / 8 board symmetries / 164 games = 35.7 plies), so the schedule is
-    // spent by the time an average game ends; the previous fixed decay of 12 only reached
-    // the floor at ply 98 (2.7x the average game), i.e. selection was never greedy.
+    // GREEDY_FROM_STEP is the measured average self-play game length of this profile, so
+    // the schedule is spent by the time an average game ends and every later ply selects
+    // greedily. Measured 2026-09-28 on the newest round of all five rule lineages (10 games
+    // each): mean 17.7 (FreeStyle) / 20.3 (Standard) / 22.6 (Renju) / 18.4 (Caro) / 23.3
+    // (Standard+Caro) plies, cross-rule mean ~20 and median 16-24. The previous 36 came
+    // from the iter-1 renju log (46840 samples / 8 board symmetries / 164 games = 35.7
+    // plies) and had stopped describing the games this profile actually plays: at 36 the
+    // opening was still at temp 0.20 by ply 16, i.e. the deciding plies of a ~20-ply game
+    // were never selected near-greedily. EXPLORE_STEP keeps the earlier ~28% ratio
+    // (was 10 of 36); temp_at derives the decay length from both anchors.
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const EXPLORE_STEP: u16 = 10;
+    pub const EXPLORE_STEP: u16 = 6;
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const GREEDY_FROM_STEP: u16 = 36;
+    pub const GREEDY_FROM_STEP: u16 = 20;
     // AlphaZero exploration noise: π = (1 - DIRI)·p + DIRI·η, η ~ Dir(DIRICHLET_ALPHA)
     // DIRI is the Dirichlet noise mixing factor ε (0.25 in the AlphaZero paper)
     #[cfg(not(feature = "tic-tac-toe"))]
@@ -73,8 +79,16 @@ pub mod cfg {
     // stay feasible on 2 vCPUs
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const SIMS_BOOST_STEP: usize = 64;
+    // 2026-09-28: `400 + (weight_id / 20) * 64` reaches the cap at weight 140, so every
+    // generation of the current lineage (515+) has been paying it, and on 2 vCPUs it is the
+    // dominant cost of a round: 16 games x ~20 plies x SIMS_CAP simulations. The newest
+    // windows show rounds being cut short (10-13 games delivered instead of 16), so the cap
+    // is traded for rounds that finish: 800 is still 2x DEFAULT_SIMULATION_NUM and keeps the
+    // search targets sharp (the newest windows measure pi entropy 1.27-1.74 nats, top-1
+    // 0.56-0.69), while 600 would halve the budget and risk the flat-target regime this
+    // profile used to sit in (H(pi) ~ 2.6 nats with the older, softer search).
     #[cfg(not(feature = "tic-tac-toe"))]
-    pub const SIMS_CAP: usize = 1200;
+    pub const SIMS_CAP: usize = 800;
 
     pub const MAX_BOARD_SIZE: u8 = 25;
     pub const MIN_BOARD_SIZE: u8 = 3;
