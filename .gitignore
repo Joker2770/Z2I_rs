@@ -40,3 +40,4 @@ ENV/
 *.egg-info/
 dist/
 build/
+tmp/

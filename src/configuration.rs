@@ -19,8 +19,10 @@ pub mod cfg {
     pub const EXPLORE_STEP: u16 = 3;
     #[cfg(feature = "tic-tac-toe")]
     pub const GREEDY_FROM_STEP: u16 = 9;
+    // Maximum noise mix; self-play tapers this by ply and normalized MCTS-policy entropy.
     #[cfg(feature = "tic-tac-toe")]
     pub const DIRI: f64 = 0.3;
+    // Per-candidate Dirichlet concentration within the opening/midgame noise region.
     #[cfg(feature = "tic-tac-toe")]
     pub const DIRICHLET_ALPHA: f64 = 0.35;
     #[cfg(feature = "tic-tac-toe")]
@@ -60,11 +62,10 @@ pub mod cfg {
     pub const EXPLORE_STEP: u16 = 6;
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const GREEDY_FROM_STEP: u16 = 20;
-    // AlphaZero exploration noise: π = (1 - DIRI)·p + DIRI·η, η ~ Dir(DIRICHLET_ALPHA)
-    // DIRI is the Dirichlet noise mixing factor ε (0.25 in the AlphaZero paper)
+    // Maximum noise mix; self-play tapers this by ply and normalized MCTS-policy entropy.
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const DIRI: f64 = 0.25;
-    // Dirichlet concentration parameter α (0.3 in the AlphaZero paper)
+    // Per-candidate Dirichlet concentration within the opening/midgame noise region.
     #[cfg(not(feature = "tic-tac-toe"))]
     pub const DIRICHLET_ALPHA: f64 = 0.3;
     // suggest < 256, and >= 1

@@ -42,6 +42,132 @@ pub fn temp_at(step: u16) -> f64 {
     )
 }
 
+fn noise_candidates(board: &[Vec<Color>], legal_moves: &[u8]) -> Vec<usize> {
+    let size = board.len();
+    if size == 0 {
+        return Vec::new();
+    }
+    assert!(board.iter().all(|row| row.len() == size));
+    assert_eq!(legal_moves.len(), size * size);
+
+    let has_stones = board.iter().flatten().any(|color| *color != Color::Blank);
+    let mut candidates = Vec::new();
+    for (index, legal) in legal_moves.iter().enumerate() {
+        if *legal != 1 {
+            continue;
+        }
+        let (row, col) = (index / size, index % size);
+        let near_stone = if has_stones {
+            let radius = 2usize;
+            let row_start = row.saturating_sub(radius);
+            let row_end = (row + radius).min(size - 1);
+            let col_start = col.saturating_sub(radius);
+            let col_end = (col + radius).min(size - 1);
+            (row_start..=row_end)
+                .any(|r| (col_start..=col_end).any(|c| board[r][c] != Color::Blank))
+        } else {
+            let center = (size - 1) / 2;
+            let radius = (size / 4).clamp(1, 2);
+            row.abs_diff(center) <= radius && col.abs_diff(center) <= radius
+        };
+        if near_stone {
+            candidates.push(index);
+        }
+    }
+
+    // A small or unusual board can leave no point in the preferred region. Do not
+    // turn a valid position into a no-noise position solely because of that filter.
+    if candidates.is_empty() {
+        candidates.extend(
+            legal_moves
+                .iter()
+                .enumerate()
+                .filter_map(|(index, legal)| (*legal == 1).then_some(index)),
+        );
+    }
+    candidates
+}
+
+fn normalized_policy_entropy(raw_probs: &[f64], legal_moves: &[u8]) -> f64 {
+    assert_eq!(raw_probs.len(), legal_moves.len());
+    let legal_count = legal_moves.iter().filter(|legal| **legal == 1).count();
+    if legal_count <= 1 {
+        return 0.0;
+    }
+
+    let legal_mass: f64 = raw_probs
+        .iter()
+        .zip(legal_moves)
+        .filter_map(|(prob, legal)| {
+            (*legal == 1 && prob.is_finite() && *prob > 0.0).then_some(*prob)
+        })
+        .sum();
+    if !legal_mass.is_finite() || legal_mass <= f64::EPSILON {
+        return 0.0;
+    }
+
+    let entropy: f64 = raw_probs
+        .iter()
+        .zip(legal_moves)
+        .filter_map(|(prob, legal)| {
+            (*legal == 1 && prob.is_finite() && *prob > 0.0).then_some(prob / legal_mass)
+        })
+        .map(|prob| -prob * prob.ln())
+        .sum();
+    (entropy / (legal_count as f64).ln()).clamp(0.0, 1.0)
+}
+
+fn noise_epsilon(step: u16, raw_probs: &[f64], legal_moves: &[u8]) -> f64 {
+    let legal_count = legal_moves.iter().filter(|legal| **legal == 1).count();
+    if legal_count <= 2 || step >= cfg::GREEDY_FROM_STEP {
+        return 0.0;
+    }
+
+    let phase_scale = if step <= cfg::EXPLORE_STEP {
+        1.0
+    } else {
+        f64::from(cfg::GREEDY_FROM_STEP - step)
+            / f64::from(cfg::GREEDY_FROM_STEP - cfg::EXPLORE_STEP)
+    };
+
+    // A diffuse search policy already explores many moves. Concentrated search
+    // policies (often forced tactical replies) should not be overturned by noise.
+    cfg::DIRI * phase_scale * normalized_policy_entropy(raw_probs, legal_moves)
+}
+
+fn add_self_play_noise(
+    action_probs: &mut [f64],
+    raw_probs: &[f64],
+    legal_moves: &[u8],
+    board: &[Vec<Color>],
+    step: u16,
+    rng: &mut impl rand::Rng,
+) {
+    assert_eq!(action_probs.len(), raw_probs.len());
+    assert_eq!(action_probs.len(), legal_moves.len());
+    let epsilon = noise_epsilon(step, raw_probs, legal_moves);
+    if epsilon <= 0.0 {
+        return;
+    }
+
+    let candidates = noise_candidates(board, legal_moves);
+    if candidates.len() < 2 {
+        return;
+    }
+    let dirichlet = Dirichlet::new(&vec![cfg::DIRICHLET_ALPHA; candidates.len()]).unwrap();
+    let noise = dirichlet.sample(rng);
+    let mut mixed_noise = vec![0.0; action_probs.len()];
+    for (index, probability) in candidates.into_iter().zip(noise) {
+        mixed_noise[index] = probability;
+    }
+    for (index, legal) in legal_moves.iter().enumerate() {
+        if *legal == 1 {
+            action_probs[index] =
+                (1.0 - epsilon) * action_probs[index] + epsilon * mixed_noise[index];
+        }
+    }
+}
+
 pub struct SelfPlay {
     neural_network: Rc<RefCell<NeuralNetwork>>,
 }
@@ -156,26 +282,9 @@ impl SelfPlay {
                 last_move_buffer[step as usize] = game_ref.borrow().get_last_move();
 
                 let lm = game_ref.borrow().get_legal_moves().to_vec();
-                // AlphaZero exploration noise: add Dirichlet noise on legal moves
-                // η ~ Dir(α),π = (1 - ε)·p + ε·η(ε = cfg::DIRI,α = cfg::DIRICHLET_ALPHA)
-                let legal_count = lm
-                    .iter()
-                    .take(action_probs.len())
-                    .filter(|legal| **legal == 1u8)
-                    .count();
-                if legal_count >= 2 {
-                    let dirichlet =
-                        Dirichlet::new(&vec![cfg::DIRICHLET_ALPHA; legal_count]).unwrap();
-                    let noise = dirichlet.sample(&mut rng);
-                    let mut noise_idx = 0usize;
-                    for (i, legal) in lm.iter().enumerate().take(action_probs.len()) {
-                        if *legal == 1u8 {
-                            action_probs[i] =
-                                (1.0 - cfg::DIRI) * action_probs[i] + cfg::DIRI * noise[noise_idx];
-                            noise_idx += 1;
-                        }
-                    }
-                }
+                // Keep opening exploration broad, focus perturbations around played stones,
+                // taper them with game phase and avoid disturbing concentrated tactical search.
+                add_self_play_noise(&mut action_probs, &raw_probs, &lm, &board, step, &mut rng);
 
                 let rst = mcts.get_action_by_sample(&action_probs);
                 // canonical game fingerprint: the chosen move sequence uniquely determines the
@@ -323,8 +432,9 @@ impl SelfPlay {
 #[cfg(test)]
 mod tests {
 
-    use super::cfg;
+    use super::{cfg, noise_candidates, noise_epsilon, normalized_policy_entropy};
     use crate::play;
+    use crate::rule::Color;
 
     use rand_distr::{Distribution, multi::Dirichlet};
 
@@ -359,6 +469,113 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn noise_schedule_fades_to_zero_before_greedy_moves() {
+        let probs = vec![1.0 / 9.0; 9];
+        let legal = vec![1; 9];
+        assert!((noise_epsilon(cfg::EXPLORE_STEP, &probs, &legal) - cfg::DIRI).abs() < 1e-12);
+        assert!(
+            noise_epsilon(
+                (cfg::EXPLORE_STEP + cfg::GREEDY_FROM_STEP) / 2,
+                &probs,
+                &legal
+            ) < cfg::DIRI
+        );
+        assert_eq!(noise_epsilon(cfg::GREEDY_FROM_STEP, &probs, &legal), 0.0);
+        assert_eq!(
+            noise_epsilon(cfg::GREEDY_FROM_STEP.saturating_add(1), &probs, &legal),
+            0.0
+        );
+    }
+
+    #[test]
+    fn concentrated_search_and_near_terminal_legal_sets_suppress_noise() {
+        let legal = vec![1; 9];
+        let one_hot = [1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(normalized_policy_entropy(&one_hot, &legal), 0.0);
+        assert_eq!(noise_epsilon(0, &one_hot, &legal), 0.0);
+
+        let two_legal = vec![1, 1, 0, 0, 0, 0, 0, 0, 0];
+        let uncertain = vec![0.5, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert_eq!(noise_epsilon(0, &uncertain, &two_legal), 0.0);
+        assert_eq!(normalized_policy_entropy(&[0.5, 0.5], &[1, 1]), 1.0);
+    }
+
+    #[test]
+    fn opening_noise_candidates_are_centered_and_include_small_boards() {
+        let board = vec![vec![Color::Blank; 15]; 15];
+        let legal = vec![1; 15 * 15];
+        let candidates = noise_candidates(&board, &legal);
+        assert_eq!(candidates.len(), 25);
+        assert!(candidates.contains(&(7 * 15 + 7)));
+        assert!(!candidates.contains(&0));
+
+        let small_board = vec![vec![Color::Blank; 3]; 3];
+        let small_legal = vec![1; 9];
+        assert_eq!(noise_candidates(&small_board, &small_legal).len(), 9);
+    }
+
+    #[test]
+    fn midgame_noise_candidates_stay_near_stones_and_respect_legality() {
+        let mut board = vec![vec![Color::Blank; 15]; 15];
+        board[7][7] = Color::Black;
+        let mut legal = vec![1; 15 * 15];
+        legal[7 * 15 + 7] = 0;
+        legal[7 * 15 + 8] = 0;
+
+        let candidates = noise_candidates(&board, &legal);
+        assert!(candidates.contains(&(5 * 15 + 5)));
+        assert!(!candidates.contains(&(7 * 15 + 7)));
+        assert!(!candidates.contains(&(7 * 15 + 8)));
+        assert!(!candidates.contains(&0));
+
+        legal.fill(0);
+        assert!(noise_candidates(&board, &legal).is_empty());
+        assert_eq!(noise_epsilon(0, &vec![0.0; 15 * 15], &legal), 0.0);
+    }
+
+    #[test]
+    fn edge_stone_candidates_use_saturating_board_bounds() {
+        let mut board = vec![vec![Color::Blank; 5]; 5];
+        board[0][0] = Color::Black;
+        let mut legal = vec![1; 25];
+        legal[0] = 0;
+
+        let candidates = noise_candidates(&board, &legal);
+        assert!(candidates.contains(&1));
+        assert!(candidates.contains(&(2 * 5 + 2)));
+        assert!(!candidates.contains(&(3 * 5 + 3)));
+    }
+
+    #[test]
+    fn adding_noise_preserves_probability_mass_and_never_uses_forbidden_points() {
+        let board = vec![vec![Color::Blank; 3]; 3];
+        let mut legal = vec![1; 9];
+        legal[0] = 0;
+        let raw_probs = vec![
+            0.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+            1.0 / 8.0,
+        ];
+        let mut action_probs = raw_probs.clone();
+        let mut rng = rand::rng();
+        super::add_self_play_noise(&mut action_probs, &raw_probs, &legal, &board, 0, &mut rng);
+
+        assert!((action_probs.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        assert_eq!(action_probs[0], 0.0);
+        assert!(
+            action_probs
+                .iter()
+                .all(|prob| prob.is_finite() && *prob >= 0.0)
+        );
     }
 
     #[test]

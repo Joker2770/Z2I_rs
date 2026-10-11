@@ -41,7 +41,7 @@ rand = "0.10.3"
 rand_distr = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.0"
-tokio = { version = "1.53.1", features = [
+tokio = { version = "1.53.2", features = [
     "rt",
     "rt-multi-thread",
     "macros",
@@ -50,7 +50,7 @@ tokio = { version = "1.53.1", features = [
     "io-std",
     "io-util",
 ] }
-toml = "1.1.6+spec-1.1.0"
+toml = "1.1.8+spec-1.1.0"
 
 [[bin]]
 name = "pbrain-Z2I_rs"
