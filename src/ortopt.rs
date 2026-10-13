@@ -151,14 +151,14 @@ impl NeuralNetwork {
         intra_thread_num: u8,
     ) -> Result<Self, Box<dyn error::Error>> {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
-        ortcommon::init()?;
+        let env = ortcommon::get_env()?;
 
         let intra_threads = if intra_thread_num > 1 {
             intra_thread_num
         } else {
             cfg::DEFAULT_INTRA_THREAD_NUM
         };
-        let session = Session::builder()?
+        let session = Session::builder(&env)?
             .with_optimization_level(session::builder::GraphOptimizationLevel::Level3)?
             .with_intra_threads(intra_threads as usize)?
             .with_inter_threads(1)?
