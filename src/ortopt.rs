@@ -151,7 +151,7 @@ impl NeuralNetwork {
         intra_thread_num: u8,
     ) -> Result<Self, Box<dyn error::Error>> {
         // Register EPs based on feature flags - this isn't crucial for usage and can be removed.
-        let env = ortcommon::get_env()?;
+        let env = ortcommon::get_env().map_err(std::io::Error::other)?;
 
         let intra_threads = if intra_thread_num > 1 {
             intra_thread_num

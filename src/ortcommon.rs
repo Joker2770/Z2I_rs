@@ -4,8 +4,22 @@
 use ort::environment::Environment;
 #[allow(unused)]
 use ort::ep::*;
+use std::sync::OnceLock;
 
-pub fn get_env() -> ort::Result<Environment> {
+static ORT_ENV: OnceLock<Result<Environment, String>> = OnceLock::new();
+
+/// Return a handle to the process-wide ONNX Runtime environment.
+///
+/// The environment is retained for the process lifetime because `ort` permits only one
+/// environment per process. Clones share the same underlying environment.
+pub fn get_env() -> Result<Environment, String> {
+    match ORT_ENV.get_or_init(|| build_env().map_err(|error| error.to_string())) {
+        Ok(env) => Ok(env.clone()),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+fn build_env() -> ort::Result<Environment> {
     #[cfg(feature = "backend-candle")]
     ort::set_api(ort_candle::api());
     #[cfg(feature = "backend-tract")]
@@ -52,4 +66,21 @@ pub fn get_env() -> ort::Result<Environment> {
             WebGPU::default().build(),
         ])
         .build()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_env;
+
+    #[test]
+    fn concurrent_calls_share_one_environment() {
+        let workers: Vec<_> = (0..8).map(|_| std::thread::spawn(get_env)).collect();
+
+        for worker in workers {
+            worker
+                .join()
+                .expect("environment initializer thread panicked")
+                .expect("environment initialization failed");
+        }
+    }
 }
