@@ -10,7 +10,7 @@ use crate::{
 
 use ort::{
     session::{self, RunOptions, Session, SessionOutputs},
-    value::{TensorRef, ValueType},
+    value::{Tensor, TensorRef, ValueType},
 };
 
 use ndarray::Array;
@@ -443,7 +443,7 @@ async fn infer_batch_async(
     )
     .map_err(|error| error.to_string())?;
     let inputs = ort::inputs! {
-        &input_node_names[0] => TensorRef::from_array_view(&input_arr)
+        &input_node_names[0] => Tensor::from_array(input_arr)
             .map_err(|error| error.to_string())?
     };
 

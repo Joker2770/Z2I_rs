@@ -36,12 +36,12 @@ bitflags = "2.13.2"
 futures = "0.3.34"
 hex = "0.4.3"
 ndarray = "0.17.2"
-ort = "2.0.0-rc.14"
+ort = "2.0.0-rc.15"
 rand = "0.10.3"
 rand_distr = "0.6.0"
 serde = { version = "1.0.229", features = ["derive"] }
 sha2 = "0.11.1"
-tokio = { version = "1.53.2", features = [
+tokio = { version = "1.54.1", features = [
     "rt",
     "rt-multi-thread",
     "macros",
