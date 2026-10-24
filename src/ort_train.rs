@@ -1,4 +1,5 @@
 #![deny(deprecated)]
+//! Deprecated legacy ONNX Runtime training entry point, retained for compatibility.
 
 mod configuration;
 
@@ -335,6 +336,9 @@ fn usage(program: &str) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    eprintln!(
+        "warning: ort_train is deprecated and retained for compatibility; avoid it for new training workflows"
+    );
     let args = env::args().collect::<Vec<_>>();
     if args.len() < 5 {
         usage(&args[0]);

@@ -610,9 +610,11 @@ positions and about a twentieth in the first 40 plies; the evaluation costs noth
 because the 9.3 work sits behind the `sum4 < 2 && sum3 >= 2` gate and only the points that can
 actually become double-threes pay for it.
 
-### ORT Training
+### ORT Training (Deprecated)
 
-The Rust training entry needs ONNX Runtime Training artifacts, not ordinary inference models. The artifact directory must contain:
+The standalone `ort_train` binary is deprecated and retained for compatibility; avoid
+using it for new training workflows. It needs ONNX Runtime Training artifacts, not
+ordinary inference models. The artifact directory must contain:
 
 ```text
 training_model.onnx
